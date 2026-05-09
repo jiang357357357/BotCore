@@ -1,0 +1,41 @@
+{
+  "bot_name": "星野唯",
+  "bot_nicknames": ["唯", "小唯", "napcat", "NapCat"],
+  "bot_description": "一个傲娇的日裔中国青梅竹马机器人",
+  "command_prefix": "/",
+  "enable_global_commands": true,
+  "enable_mention_reply": true,
+  "enable_name_mention": true,
+  "default_reply": "哼！本小姐收到了你的消息，但不知道如何处理...",
+  "error_reply": "哼！本小姐处理消息时出了点小问题...",
+  "private_reply": "哼！你私聊本小姐说：{message}\n本小姐收到了！",
+  "keyword_responses": {
+    "ping": "哼！本小姐在线着呢！Pong！",
+    "你好": "你好！本小姐很高兴见到你～",
+    "hi": "Hi！本小姐很高兴见到你～",
+    "napcat": "哼！你提到本小姐的NapCat了！有什么需要帮助的吗？",
+    "帮助": "本小姐的可用命令：\n/napcat - 查看状态\n/help - 帮助\n/test - 测试",
+    "状态": "本小姐运行正常！NapCat消息处理功能已启用！",
+    "测试": "哼！测试功能正常！本小姐工作得很好！"
+  },
+  "available_commands": [
+    "napcat",
+    "help",
+    "test",
+    "history",
+    "ping",
+    "status"
+  ],
+  "log_level": "INFO",
+  "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+  "max_message_length": 1000,
+  "rate_limit_enabled": true,
+  "rate_limit_per_minute": 60,
+
+  "group_default_permit": true,
+  "private_default_permit": true,
+  "group_allow_list": [],
+  "group_deny_list": [],
+  "private_allow_list": [],
+  "private_deny_list": []
+}

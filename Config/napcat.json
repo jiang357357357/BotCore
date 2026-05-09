@@ -1,0 +1,44 @@
+{
+  "napcat": {
+    "enabled": true,
+    "auto_reply": true,
+    "response_style": "tsundere"
+  },
+  "plugins": {
+    "text_plugin": {
+      "enabled": true,
+      "keyword_responses": true
+    },
+    "voice_plugin": {
+      "enabled": false,
+      "tts_enabled": false,
+      "stt_enabled": false
+    },
+    "command_plugin": {
+      "enabled": true,
+      "commands": [
+        "napcat",
+        "help",
+        "test",
+        "history",
+        "ping",
+        "status"
+      ]
+    },
+    "image_plugin": {
+      "enabled": false,
+      "recognition_enabled": false,
+      "generation_enabled": false
+    }
+  },
+  "storage": {
+    "data_dir": "data/napcat",
+    "backup_enabled": true,
+    "backup_interval": 24
+  },
+  "logging": {
+    "level": "INFO",
+    "file_enabled": true,
+    "console_enabled": true
+  }
+}

@@ -1,0 +1,71 @@
+# ============================================================
+# MonBot .monconfig
+# QQ 机器人配置文件 - NoneBot2 + OneBot V11
+# ============================================================
+
+# ==============================
+# [bot] 机器人身份
+# ==============================
+[bot]
+NAME=星野唯
+NICKNAMES=唯,小唯,napcat,NapCat
+DESCRIPTION=一个傲娇的日裔中国青梅竹马机器人
+
+# ==============================
+# [nonebot] NoneBot2 框架
+# ==============================
+[nonebot]
+DRIVER=~aiohttp
+HOST=127.0.0.1
+PORT=8080
+SUPERUSERS=123456789
+
+# ==============================
+# [onebot] OneBot V11 / NapCat 连接
+# ==============================
+[onebot]
+WS_URLS=ws://1.13.181.58:8050
+ACCESS_TOKEN=M79IAmt6cCrk3Tw1
+
+# ==============================
+# [moncore] MonCore AI 后端连接
+# ==============================
+[moncore]
+IP=
+HTTP_HOST=localhost
+WS_PORT=8000
+
+# ==============================
+# [hub] MonHub 消息中转站
+# ==============================
+[hub]
+ADDRESS=tcp://127.0.0.1:40051
+QUERY_TIMEOUT=5
+
+# ==============================
+# [features] 功能开关
+# ==============================
+[features]
+VOICE_MODE_ENABLED=true
+ENABLE_MENTION_REPLY=true
+ENABLE_NAME_MENTION=true
+
+# ==============================
+# [permissions] 权限控制
+# ==============================
+[permissions]
+GROUP_DEFAULT_PERMIT=true
+PRIVATE_DEFAULT_PERMIT=true
+GROUP_ALLOW_LIST=
+GROUP_DENY_LIST=
+PRIVATE_ALLOW_LIST=
+PRIVATE_DENY_LIST=
+
+# ============================================================
+# 注意事项
+# ============================================================
+# 1. 修改配置后需要重启机器人
+# 2. ACCESS_TOKEN 必须与 NapCat 配置一致
+# 3. WS_URLS 指向你的 NapCat WebSocket 地址
+# 4. MonCore 地址优先通过 MonHub 查询，MONCORE.IP 仅作为手动兜底
+# ============================================================
