@@ -220,21 +220,29 @@ class ConnectionManager:
                 
                 # 获取联系人列表（好友列表）
                 try:
-                    contacts_list = await napcat_api.get_friend_list()
+                    contacts_list = await asyncio.wait_for(
+                        napcat_api.get_friend_list(), timeout=3.0
+                    )
                     if contacts_list:
                         logger.info(f"获取到联系人列表: {len(contacts_list)} 个联系人")
                     else:
                         logger.info("联系人列表为空")
+                except asyncio.TimeoutError:
+                    logger.warning("获取好友列表超时，跳过")
                 except Exception as e:
                     logger.warning(f"获取联系人列表失败: {e}", exc_info=True)
                 
                 # 获取群聊列表
                 try:
-                    groups_list = await napcat_api.get_group_list()
+                    groups_list = await asyncio.wait_for(
+                        napcat_api.get_group_list(), timeout=3.0
+                    )
                     if groups_list:
                         logger.info(f"获取到群聊列表: {len(groups_list)} 个群聊")
                     else:
                         logger.info("群聊列表为空")
+                except asyncio.TimeoutError:
+                    logger.warning("获取群聊列表超时，跳过")
                 except Exception as e:
                     logger.warning(f"获取群聊列表失败: {e}", exc_info=True)
         except Exception as e:

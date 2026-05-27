@@ -49,6 +49,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+!src/System/Logs/
 
 # Database
 *.db

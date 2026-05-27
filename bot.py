@@ -23,8 +23,12 @@ mon_config = MonConfig()
 
 # ── NoneBot 框架配置 ──
 _nb = mon_config.section("nonebot")
+_debug = mon_config.section("debug")
+_hot_reload = _debug.get("hot_reload", "false").lower() in ("true", "1", "yes")
+_driver = _nb.get("driver", "~aiohttp")
+print(f"[BOT] driver={_driver}, hot_reload={_hot_reload}")
 nonebot.init(
-    driver=_nb.get("driver", "~aiohttp"),
+    driver=_driver,
     host=_nb.get("host", "127.0.0.1"),
     port=int(_nb.get("port", "8080")),
     superusers={
@@ -56,4 +60,20 @@ driver.register_adapter(OneBotV11Adapter)
 nonebot.load_plugins("src/plugins")
 
 if __name__ == "__main__":
-    nonebot.run()
+    if _hot_reload and "--no-reload" not in sys.argv:
+        import subprocess
+        from watchfiles import watch, DefaultFilter
+
+        print("[HOT_RELOAD] 监听文件变化中...")
+        proc = subprocess.Popen([sys.executable, __file__, "--no-reload"])
+        try:
+            for changes in watch("src", recursive=True, watch_filter=DefaultFilter()):
+                print(f"[HOT_RELOAD] 检测到文件变化，重启中...")
+                proc.terminate()
+                proc.wait()
+                proc = subprocess.Popen([sys.executable, __file__, "--no-reload"])
+        except KeyboardInterrupt:
+            proc.terminate()
+            proc.wait()
+    else:
+        nonebot.run()

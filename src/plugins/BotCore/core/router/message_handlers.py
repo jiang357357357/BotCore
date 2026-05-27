@@ -90,20 +90,20 @@ def _is_allowed_by_local_policy(event: MessageEvent) -> bool:
 def _is_supported_by_backend(event: MessageEvent) -> bool:
     """
     检查消息是否在后端支持的列表中
-    
-    后端支持的QQ号列表用于过滤消息：
-    - 私聊消息：检查发送者QQ号是否在 contacts 中
-    - 群聊消息：检查群聊QQ号是否在 groups 中
-    
-    重要：只有在映射数组中的消息才会被处理，空数组表示没有配置任何映射
-    
-    Args:
-        event: 消息事件
-        
-    Returns:
-        如果消息在后端支持列表中，返回 True；否则返回 False
+
+    超级管理员不受此限制，直接放行。
     """
     try:
+        # 超级管理员直接放行
+        try:
+            from nonebot import get_driver
+            superusers = get_driver().config.superusers
+            user_id_str = str(event.user_id)
+            logger.debug(f"超级管理员检查: user_id={user_id_str}, superusers={superusers}, in={user_id_str in superusers}")
+            if user_id_str in superusers:
+                return True
+        except Exception as e:
+            logger.warning(f"超级管理员检查失败: {e}")
         if isinstance(event, GroupMessageEvent):
             # 群聊消息：检查群ID是否在支持的群聊列表中
             group_id = str(event.group_id)

@@ -18,7 +18,7 @@ DESCRIPTION=一个傲娇的日裔中国青梅竹马机器人
 DRIVER=~aiohttp
 HOST=127.0.0.1
 PORT=8080
-SUPERUSERS=123456789
+SUPERUSERS=2740954024
 
 # ==============================
 # [onebot] OneBot V11 / NapCat 连接
@@ -60,6 +60,12 @@ GROUP_ALLOW_LIST=
 GROUP_DENY_LIST=
 PRIVATE_ALLOW_LIST=
 PRIVATE_DENY_LIST=
+
+# ==============================
+# [debug] 调试配置
+# ==============================
+[debug]
+HOT_RELOAD=true
 
 # ============================================================
 # 注意事项
