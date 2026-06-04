@@ -67,6 +67,17 @@ PRIVATE_DENY_LIST=
 [debug]
 HOT_RELOAD=true
 
+# ==============================
+# [process] 环境脚本
+# ==============================
+[process]
+SCRIPT_VENV_LINUX_CHECK=Script/EnvTools/linux/check_env.sh
+SCRIPT_VENV_LINUX_INSTALL=Script/EnvTools/linux/install_env.sh
+SCRIPT_VENV_LINUX_REMOVE=Script/EnvTools/linux/remove_env.sh
+SCRIPT_VENV_WIN_CHECK=Script/EnvTools/win/check_env.ps1
+SCRIPT_VENV_WIN_INSTALL=Script/EnvTools/win/install_env.ps1
+SCRIPT_VENV_WIN_REMOVE=Script/EnvTools/win/remove_env.ps1
+
 # ============================================================
 # 注意事项
 # ============================================================
@@ -74,4 +85,5 @@ HOT_RELOAD=true
 # 2. ACCESS_TOKEN 必须与 NapCat 配置一致
 # 3. WS_URLS 指向你的 NapCat WebSocket 地址
 # 4. MonCore 地址优先通过 MonHub 查询，MONCORE.IP 仅作为手动兜底
+# 5. BotCore 复用父级 BotLauncher 的 .venv，环境脚本为代理入口
 # ============================================================
