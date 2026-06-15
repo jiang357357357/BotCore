@@ -40,6 +40,114 @@ class MonCoreAPI:
         # 注册消息处理器
         self.ws_client.register_handler("reply", self._handle_reply)
         self.ws_client.register_handler("store", self._handle_store_response)
+        self.ws_client.register_handler("favorability", self._handle_favorability_response)
+        self.ws_client.register_handler("memory", self._handle_memory_response)
+
+    @staticmethod
+    def _get_event_message(event: MessageEvent):
+        return getattr(event, "original_message", None) or event.get_message()
+
+    @staticmethod
+    async def _resolve_at_display(event: MessageEvent, segment) -> str:
+        qq = str(segment.data.get("qq", "") or "")
+        if not qq:
+            return "[@]"
+        if qq.lower() == "all":
+            return "@全体成员"
+
+        for key in ("name", "nickname", "card", "display"):
+            value = segment.data.get(key)
+            if value:
+                return f"@{value}"
+
+        try:
+            from src.plugins.BotCore.app import napcat_api
+            display_name = None
+            if napcat_api:
+                if isinstance(event, GroupMessageEvent):
+                    display_name = await napcat_api.get_group_member_display_name(
+                        group_id=str(event.group_id),
+                        user_id=qq,
+                    )
+                if not display_name:
+                    display_name = napcat_api.get_cached_bot_display_name(qq)
+            if display_name:
+                return f"@{display_name}"
+        except Exception as e:
+            logger.debug(f"解析 at 显示名失败: qq={qq}, error={e}")
+
+        return f"@用户{qq}"
+
+    @staticmethod
+    async def _extract_mentions(event: MessageEvent) -> list[Dict[str, str]]:
+        mentions: list[Dict[str, str]] = []
+        try:
+            message = MonCoreAPI._get_event_message(event)
+            for segment in message:
+                if segment.type != "at":
+                    continue
+                qq = str(segment.data.get("qq", "") or "")
+                display = await MonCoreAPI._resolve_at_display(event, segment)
+                mentions.append({"qq": qq, "display": display.lstrip("@")})
+        except Exception as e:
+            logger.debug(f"提取 at 元数据失败: {e}")
+        return mentions
+
+    @staticmethod
+    async def _extract_event_content(event: MessageEvent) -> str:
+        """提取可发送给 MonCore 的消息内容，保证 store/chat 使用同一套规则。"""
+        message = MonCoreAPI._get_event_message(event)
+        try:
+            content_parts = []
+            for segment in message:
+                segment_type = segment.type
+                if segment_type == "text":
+                    text = segment.data.get("text", "").strip()
+                    if text:
+                        content_parts.append(text)
+                elif segment_type == "image":
+                    content_parts.append("[图片]")
+                elif segment_type == "face":
+                    content_parts.append("[表情]")
+                elif segment_type == "record":
+                    content_parts.append("[语音]")
+                elif segment_type == "video":
+                    content_parts.append("[视频]")
+                elif segment_type == "at":
+                    content_parts.append(await MonCoreAPI._resolve_at_display(event, segment))
+                else:
+                    content_parts.append(f"[{segment_type}]")
+
+            if content_parts:
+                return " ".join(content_parts)
+
+            content = message.extract_plain_text()
+            return content.strip() if content.strip() else "[空消息]"
+        except Exception as e:
+            logger.warning(f"提取非文本消息内容时出错: {e}")
+            return "[消息解析错误]"
+
+    @staticmethod
+    async def _build_event_metadata(event: MessageEvent, content: str) -> Dict[str, Any]:
+        """构建消息元数据，用于 MonCore 保留群内真实发送者。"""
+        is_group = isinstance(event, GroupMessageEvent)
+        sender = getattr(event, "sender", None)
+        sender_nickname = getattr(sender, "card", None) or getattr(sender, "nickname", None) or ""
+        sender_user_id = str(getattr(event, "user_id", "") or "")
+        group_id = str(getattr(event, "group_id", "") or "") if is_group else ""
+        display_name = sender_nickname or sender_user_id or "用户"
+
+        metadata = {
+            "sender_user_id": sender_user_id,
+            "sender_nickname": sender_nickname,
+            "display_name": f"{display_name}({sender_user_id})" if sender_user_id and sender_nickname else display_name,
+            "is_group": is_group,
+            "raw_content": content,
+            "mentions": await MonCoreAPI._extract_mentions(event),
+        }
+        if group_id:
+            metadata["group_id"] = group_id
+        return metadata
     
     async def store_message(self, event: MessageEvent, timeout: float = 10.0) -> bool:
         """
@@ -82,44 +190,8 @@ class MonCoreAPI:
             # qq_number 是用户ID或群ID（根据 is_group 判断）
             qq_number = str(event.group_id if is_group else event.user_id)
             
-            # 提取消息内容
-            content = event.get_message().extract_plain_text()
-            
-            # 如果纯文本为空，尝试生成描述性内容（处理非文本消息）
-            if not content.strip():
-                try:
-                    message = event.get_message()
-                    content_parts = []
-                    for segment in message:
-                        segment_type = segment.type
-                        if segment_type == "text":
-                            text = segment.data.get("text", "").strip()
-                            if text:
-                                content_parts.append(text)
-                        elif segment_type == "image":
-                            content_parts.append("[图片]")
-                        elif segment_type == "face":
-                            content_parts.append("[表情]")
-                        elif segment_type == "record":
-                            content_parts.append("[语音]")
-                        elif segment_type == "video":
-                            content_parts.append("[视频]")
-                        elif segment_type == "at":
-                            qq = segment.data.get("qq", "")
-                            if qq:
-                                content_parts.append(f"@用户{qq}")
-                            else:
-                                content_parts.append("[@]")
-                        else:
-                            content_parts.append(f"[{segment_type}]")
-                    
-                    if content_parts:
-                        content = " ".join(content_parts)
-                    else:
-                        content = "[空消息]"
-                except Exception as e:
-                    logger.warning(f"提取非文本消息内容时出错: {e}")
-                    content = "[消息解析错误]"
+            content = await self._extract_event_content(event)
+            metadata = await self._build_event_metadata(event, content)
             
             # 生成唯一的 store_request_id
             timestamp_ms = int(time.time() * 1000)
@@ -138,7 +210,8 @@ class MonCoreAPI:
                 qq_number=qq_number,
                 content=content,
                 is_group=is_group,
-                store_request_id=store_request_id
+                store_request_id=store_request_id,
+                metadata=metadata,
             )
             
             if not success:
@@ -221,8 +294,8 @@ class MonCoreAPI:
             # qq_number 是用户ID或群ID（根据 is_group 判断）
             qq_number = str(event.group_id if is_group else event.user_id)
             
-            # 提取消息内容
-            content = event.get_message().extract_plain_text()
+            content = await self._extract_event_content(event)
+            metadata = await self._build_event_metadata(event, content)
             
             # 如果 need_voice 未指定，根据当前语音模式状态决定
             if need_voice is None:
@@ -251,7 +324,8 @@ class MonCoreAPI:
                 content=content,
                 is_group=is_group,
                 request_id=request_id,
-                need_voice=need_voice
+                need_voice=need_voice,
+                metadata=metadata,
             )
             
             if not success:
@@ -335,6 +409,131 @@ class MonCoreAPI:
                 
         except Exception as e:
             logger.error(f"获取角色信息时出错: {e}")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+
+    async def get_favorability(self, event: MessageEvent, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        """查询当前消息发送者与当前 Bot 绑定角色的好感状态。"""
+        request_id = None
+        try:
+            is_group = isinstance(event, GroupMessageEvent)
+            session_qq_number = str(event.group_id if is_group else event.user_id)
+            user_qq_number = str(event.user_id)
+            request_id = f"favorability_self_{int(time.time() * 1000)}_{user_qq_number}"
+
+            future = asyncio.Future()
+            self.pending_requests[request_id] = future
+
+            success = await self.ws_client.send(
+                {
+                    "command": "favorability",
+                    "subCommand": "get",
+                    "data": {
+                        "request_id": request_id,
+                        "action": "self",
+                        "session_qq_number": session_qq_number,
+                        "is_group": is_group,
+                        "user_qq_number": user_qq_number,
+                    },
+                }
+            )
+            if not success:
+                self.pending_requests.pop(request_id, None)
+                return None
+
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("等待好感状态响应超时")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+        except Exception as e:
+            logger.error(f"查询好感状态时出错: {e}")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+
+    async def get_favorability_ranking(self, event: MessageEvent, limit: int = 10, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        """查询当前群/当前 Bot 的用户好感总值排行。"""
+        request_id = None
+        try:
+            is_group = isinstance(event, GroupMessageEvent)
+            session_qq_number = str(event.group_id) if is_group else ""
+            request_id = f"favorability_ranking_{int(time.time() * 1000)}_{event.user_id}"
+
+            future = asyncio.Future()
+            self.pending_requests[request_id] = future
+
+            data = {
+                "request_id": request_id,
+                "action": "ranking",
+                "limit": limit,
+            }
+            if is_group:
+                data["session_qq_number"] = session_qq_number
+                data["is_group"] = True
+
+            success = await self.ws_client.send(
+                {
+                    "command": "favorability",
+                    "subCommand": "ranking",
+                    "data": data,
+                }
+            )
+            if not success:
+                self.pending_requests.pop(request_id, None)
+                return None
+
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("等待好感排行响应超时")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+        except Exception as e:
+            logger.error(f"查询好感排行时出错: {e}")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+
+    async def get_memories(self, event: MessageEvent, limit: int = 10, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+        """查询当前消息发送者在当前 Bot 会话中的最近记忆。"""
+        request_id = None
+        try:
+            is_group = isinstance(event, GroupMessageEvent)
+            session_qq_number = str(event.group_id if is_group else event.user_id)
+            user_qq_number = str(event.user_id)
+            request_id = f"memory_self_{int(time.time() * 1000)}_{user_qq_number}"
+
+            future = asyncio.Future()
+            self.pending_requests[request_id] = future
+
+            success = await self.ws_client.send(
+                {
+                    "command": "memory",
+                    "subCommand": "list",
+                    "data": {
+                        "request_id": request_id,
+                        "session_qq_number": session_qq_number,
+                        "is_group": is_group,
+                        "user_qq_number": user_qq_number,
+                        "limit": limit,
+                    },
+                }
+            )
+            if not success:
+                self.pending_requests.pop(request_id, None)
+                return None
+
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("等待记忆列表响应超时")
+            if request_id:
+                self.pending_requests.pop(request_id, None)
+            return None
+        except Exception as e:
+            logger.error(f"查询记忆列表时出错: {e}")
             if request_id:
                 self.pending_requests.pop(request_id, None)
             return None
@@ -479,3 +678,52 @@ class MonCoreAPI:
         except Exception as e:
             logger.error(f"处理存储响应消息时出错: {e}")
 
+    async def _handle_favorability_response(self, message: Dict[str, Any]):
+        """处理好感状态/排行响应。"""
+        try:
+            data = message.get("data", {})
+            request_id = str(data.get("request_id") or "")
+            if not request_id:
+                logger.warning("收到好感响应但缺少 request_id")
+                return
+
+            if request_id not in self.pending_requests:
+                logger.warning(f"收到好感响应但未找到待处理请求: request_id={request_id}")
+                return
+
+            future = self.pending_requests.pop(request_id)
+            if future.done():
+                return
+
+            if message.get("subCommand") == "error":
+                future.set_result({"success": False, "message": data.get("message", "查询失败")})
+                return
+
+            future.set_result({"success": True, **(data.get("result") or {})})
+        except Exception as e:
+            logger.error(f"处理好感响应时出错: {e}")
+
+    async def _handle_memory_response(self, message: Dict[str, Any]):
+        """处理记忆列表响应。"""
+        try:
+            data = message.get("data", {})
+            request_id = str(data.get("request_id") or "")
+            if not request_id:
+                logger.warning("收到记忆响应但缺少 request_id")
+                return
+
+            if request_id not in self.pending_requests:
+                logger.warning(f"收到记忆响应但未找到待处理请求: request_id={request_id}")
+                return
+
+            future = self.pending_requests.pop(request_id)
+            if future.done():
+                return
+
+            if message.get("subCommand") == "error":
+                future.set_result({"success": False, "message": data.get("message", "查询失败")})
+                return
+
+            future.set_result({"success": True, **(data.get("result") or {})})
+        except Exception as e:
+            logger.error(f"处理记忆响应时出错: {e}")

@@ -5,6 +5,7 @@ WebSocket 客户端
 
 import asyncio
 import json
+import os
 from typing import Optional, Callable, Dict, Any
 from websockets.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -35,6 +36,7 @@ class WebSocketClient:
         self.reconnect_task: Optional[asyncio.Task] = None
         self.enable_reconnect = True
         self.reconnect_callbacks: list[Callable] = []
+        self.reconnect_failed_callbacks: list[Callable[[int], Any]] = []
         self._receive_task: Optional[asyncio.Task] = None
     
     @property
@@ -107,6 +109,7 @@ class WebSocketClient:
         qq_number: str, 
         avatar_url: Optional[str] = None, 
         nickname: Optional[str] = None,
+        signature: Optional[str] = None,
         contacts: Optional[list] = None,
         groups: Optional[list] = None
     ) -> bool:
@@ -121,6 +124,7 @@ class WebSocketClient:
                 "qq_number": "123456789",
                 "avatar_url": "https://q1.qlogo.cn/g?b=qq&nk=123456789&s=100",
                 "nickname": "机器人昵称",
+                "signature": "QQ 个性签名",
                 "contacts": [{"user_id": "123456789", "nickname": "好友昵称", "avatar_url": "..."}],
                 "groups": [{"group_id": "888888888", "group_name": "群名称", "avatar_url": "..."}]
             }
@@ -130,6 +134,7 @@ class WebSocketClient:
             qq_number: QQ 号
             avatar_url: 机器人头像URL（可选）
             nickname: 机器人昵称（可选）
+            signature: QQ 个性签名（可选）
             contacts: 联系人列表（可选，从NapCat获取）
             groups: 群聊列表（可选，从NapCat获取）
             
@@ -153,6 +158,9 @@ class WebSocketClient:
             # 如果提供了昵称，添加到数据中
             if nickname:
                 register_data["nickname"] = nickname
+
+            if signature is not None:
+                register_data["signature"] = signature
             
             # 如果提供了联系人列表，添加到数据中
             if contacts is not None:
@@ -210,7 +218,8 @@ class WebSocketClient:
         qq_number: str,
         content: str,
         is_group: bool,
-        store_request_id: Optional[str] = None
+        store_request_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> bool:
         """
         发送存储消息命令
@@ -244,6 +253,9 @@ class WebSocketClient:
         # 如果提供了 store_request_id，添加到 data 中
         if store_request_id:
             data["store_request_id"] = store_request_id
+
+        if metadata:
+            data["metadata"] = metadata
         
         message = {
             "command": "store",
@@ -258,7 +270,8 @@ class WebSocketClient:
         content: str,
         is_group: bool,
         request_id: Optional[str] = None,
-        need_voice: Optional[bool] = None
+        need_voice: Optional[bool] = None,
+        metadata: Optional[dict] = None,
     ) -> bool:
         """
         发送聊天请求命令
@@ -298,6 +311,9 @@ class WebSocketClient:
         # 如果指定了 need_voice，添加到数据中
         if need_voice is not None:
             data["need_voice"] = need_voice
+
+        if metadata:
+            data["metadata"] = metadata
         
         message = {
             "command": "chat",
@@ -434,6 +450,16 @@ class WebSocketClient:
         """
         self.reconnect_callbacks.append(callback)
         logger.debug(f"已注册重连回调函数: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
+
+    def register_reconnect_failed_callback(self, callback: Callable[[int], Any]):
+        """
+        注册重连失败回调函数。
+
+        专用通道使用后端返回的 bot_url；当服务 IP 变化时，这个 URL 可能失效。
+        失败回调用于通知上层放弃旧 URL，重新走发现和注册流程。
+        """
+        self.reconnect_failed_callbacks.append(callback)
+        logger.debug(f"已注册重连失败回调函数: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
     
     async def _receive_messages(self):
         """接收消息循环"""
@@ -598,7 +624,7 @@ class WebSocketClient:
     
     async def _reconnect_loop(self):
         """重连循环"""
-        max_retries = 0  # 0 表示无限重试
+        max_retries = int(os.getenv("MONCORE_WS_RECONNECT_MAX_RETRIES", "6"))
         retry_count = 0
         
         while not self.is_connected:
@@ -629,11 +655,24 @@ class WebSocketClient:
                     retry_count += 1
                     if max_retries > 0 and retry_count >= max_retries:
                         logger.error(f"达到最大重试次数 ({max_retries})，停止重连")
+                        await self._notify_reconnect_failed(retry_count)
                         break
             except Exception as e:
                 retry_count += 1
                 logger.error(f"重连失败: {e} (尝试次数: {retry_count})")
                 if max_retries > 0 and retry_count >= max_retries:
                     logger.error(f"达到最大重试次数 ({max_retries})，停止重连")
+                    await self._notify_reconnect_failed(retry_count)
                     break
 
+    async def _notify_reconnect_failed(self, retry_count: int):
+        """通知上层重连已失败到阈值。"""
+        if not self.reconnect_failed_callbacks:
+            return
+
+        self.enable_reconnect = False
+        for callback in self.reconnect_failed_callbacks:
+            try:
+                await callback(retry_count)
+            except Exception as e:
+                logger.error(f"调用重连失败回调函数时出错: {e}")

@@ -3,9 +3,11 @@
 使用 on_message() 处理关键词触发和普通消息，负责消息分发
 """
 
+import asyncio
+
 from nonebot import on_message
 from nonebot.exception import FinishedException
-from nonebot.adapters.onebot.v11 import MessageEvent, Message, GroupMessageEvent, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, MessageEvent, Message, GroupMessageEvent, PrivateMessageEvent
 
 from ..business.message import PrivateMessageService, GroupMessageService
 from src.System.Logs import get_logger
@@ -23,6 +25,90 @@ logger = get_logger(__name__)
 # 注意：on_message() 默认 block=True，会阻断后续响应器
 # 这里我们想要处理所有非命令消息（关键词和普通消息），所以保持 block=True
 message_matcher = on_message(priority=10, block=True)
+
+SENTENCE_END_CHARS = set("。！？!?")
+
+
+def _limit_reply_parts(parts: list[str]) -> list[str]:
+    """限制拆分条数，避免长回复刷屏。"""
+    max_segments = max(1, int(getattr(bot_config, "max_reply_segments", 8) or 8))
+    if len(parts) <= max_segments:
+        return parts
+
+    head = parts[: max_segments - 1]
+    tail = "\n".join(parts[max_segments - 1:])
+    return head + [tail]
+
+
+def _split_by_sentence_count(text: str) -> list[str]:
+    """没有显式换行时，每 N 个句末标点拆成一条。"""
+    sentence_count = max(0, int(getattr(bot_config, "split_reply_sentence_count", 2) or 0))
+    if sentence_count <= 0:
+        return [text.strip()] if text.strip() else []
+
+    parts: list[str] = []
+    current: list[str] = []
+    end_count = 0
+
+    for char in text.strip():
+        current.append(char)
+        if char not in SENTENCE_END_CHARS:
+            continue
+
+        end_count += 1
+        if end_count >= sentence_count:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            end_count = 0
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+
+    return parts
+
+def _split_reply_message(reply: Message) -> list[Message]:
+    """拆分纯文本回复；非纯文本消息保持原样。"""
+    try:
+        if not getattr(bot_config, "split_multiline_reply", True):
+            return [reply]
+
+        segments = list(reply)
+        if not segments or any(segment.type != "text" for segment in segments):
+            return [reply]
+
+        text = reply.extract_plain_text()
+        lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n")]
+        parts = [line for line in lines if line]
+        if len(parts) <= 1:
+            parts = _split_by_sentence_count(text)
+
+        parts = _limit_reply_parts(parts)
+        if len(parts) <= 1:
+            return [reply]
+
+        return [Message(part) for part in parts]
+    except Exception as e:
+        logger.warning(f"拆分多行回复失败，回退为单条发送: {e}")
+        return [reply]
+
+
+async def _finish_reply(bot: Bot, event: MessageEvent, reply: Message, reason: str) -> None:
+    """发送回复；多行纯文本自动拆成多条 QQ 消息。"""
+    messages = _split_reply_message(reply)
+    if len(messages) <= 1:
+        await message_matcher.finish(reply)
+        return
+
+    interval = max(0.0, float(getattr(bot_config, "split_reply_interval_seconds", 0.35) or 0.0))
+    logger.info(f"{reason} - 多行回复拆分发送: {len(messages)} 条")
+    for item in messages[:-1]:
+        await bot.send(event, item)
+        if interval:
+            await asyncio.sleep(interval)
+    await message_matcher.finish(messages[-1])
 
 
 def _get_supported_contacts():
@@ -105,16 +191,26 @@ def _is_supported_by_backend(event: MessageEvent) -> bool:
         except Exception as e:
             logger.warning(f"超级管理员检查失败: {e}")
         if isinstance(event, GroupMessageEvent):
-            # 群聊消息：检查群ID是否在支持的群聊列表中
+            # 群聊消息：群号或发言人 QQ 任一在后端支持列表中即可放行
             group_id = str(event.group_id)
+            user_id = str(event.user_id)
             supported_groups = _get_supported_groups()
-            
-            # 检查群ID是否在支持列表中
-            is_supported = group_id in supported_groups
+            supported_contacts = _get_supported_contacts()
+
+            group_supported = group_id in supported_groups
+            user_supported = user_id in supported_contacts
+            is_supported = group_supported or user_supported
             if not is_supported:
-                logger.info(f"群聊 {group_id} 不在后端支持的列表中（当前支持列表: {supported_groups}），跳过处理")
+                logger.info(
+                    f"群聊 {group_id} 与发言人 {user_id} 均不在后端支持列表中"
+                    f"（groups={supported_groups}, contacts={supported_contacts}），跳过处理"
+                )
+            elif group_supported and user_supported:
+                logger.debug(f"群聊 {group_id} 与发言人 {user_id} 均在后端支持列表中，允许处理")
+            elif group_supported:
+                logger.debug(f"群聊 {group_id} 在后端支持群列表中，允许处理")
             else:
-                logger.debug(f"群聊 {group_id} 在后端支持的列表中，允许处理")
+                logger.debug(f"发言人 {user_id} 在后端支持联系人列表中，允许处理群聊 {group_id}")
             return is_supported
             
         elif isinstance(event, PrivateMessageEvent):
@@ -144,6 +240,22 @@ def _get_supported_keywords():
     """延迟获取后端支持的关键词列表"""
     from ...app import get_supported_keywords
     return get_supported_keywords()
+
+
+async def _ensure_backend_ready(event: MessageEvent) -> bool:
+    """确保 MonCore 已连接；启动阶段失败后，消息到来时按需向 MonHub 重试一次。"""
+    try:
+        from ...app import ensure_moncore_ready
+
+        context_label = (
+            f"群聊 {event.group_id}"
+            if isinstance(event, GroupMessageEvent)
+            else f"私聊 {event.user_id}"
+        )
+        return await ensure_moncore_ready(f"收到{context_label}消息")
+    except Exception as e:
+        logger.error(f"按需恢复 MonCore 连接失败: {e}", exc_info=True)
+        return False
 
 
 def _is_keyword_trigger(event: MessageEvent) -> bool:
@@ -206,7 +318,7 @@ def _is_keyword_trigger(event: MessageEvent) -> bool:
 
 
 @message_matcher.handle()
-async def handle_message(event: MessageEvent):
+async def handle_message(bot: Bot, event: MessageEvent):
     """处理所有非命令消息（路由分发）"""
     try:
         # 记录消息接收信息
@@ -219,6 +331,10 @@ async def handle_message(event: MessageEvent):
         # 本地许可/白黑名单过滤（先过滤，避免不必要的后端交互）
         if not _is_allowed_by_local_policy(event):
             logger.debug("消息被本地策略过滤，跳过处理")
+            return
+
+        if not await _ensure_backend_ready(event):
+            logger.warning("MonCore 当前不可用，跳过本次消息处理")
             return
 
         # 检查消息是否在后端支持的列表中（必须先检查，只有支持的才处理）
@@ -240,7 +356,7 @@ async def handle_message(event: MessageEvent):
             
             if reply:
                 logger.info(f"已生成回复 - 用户: {event.user_id}")
-                await message_matcher.finish(reply)
+                await _finish_reply(bot, event, reply, "关键词回复")
             else:
                 logger.debug(f"未生成回复 - 用户: {event.user_id}")
         else:
@@ -254,7 +370,7 @@ async def handle_message(event: MessageEvent):
                 reply = await private_message_service.handle_normal_message(event)
                 if reply:
                     logger.info(f"已生成回复（私聊普通消息） - 用户: {event.user_id}")
-                    await message_matcher.finish(reply)
+                    await _finish_reply(bot, event, reply, "私聊普通回复")
             else:
                 logger.warning(f"未知消息类型，无法处理普通消息")
             

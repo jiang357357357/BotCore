@@ -12,9 +12,9 @@ class BotConfig:
     """机器人配置类"""
     
     # 机器人基本信息
-    bot_name: str = "星野唯"
-    bot_nicknames: List[str] = field(default_factory=lambda: ["唯", "小唯", "napcat", "NapCat"])
-    bot_description: str = "一个傲娇的日裔中国青梅竹马机器人"
+    bot_name: str = ""
+    bot_nicknames: List[str] = field(default_factory=list)
+    bot_description: str = ""
     
     # 消息处理配置
     command_prefix: str = "/"
@@ -26,6 +26,7 @@ class BotConfig:
     default_reply: str = "哼！本小姐收到了你的消息，但不知道如何处理..."
     error_reply: str = "哼！本小姐处理消息时出了点小问题..."
     private_reply: str = "哼！你私聊本小姐说：{message}\n本小姐收到了！"
+    voice_mode_enabled: bool = True
     
     # 关键词回复配置
     keyword_responses: Dict[str, str] = field(default_factory=lambda: {
@@ -40,7 +41,7 @@ class BotConfig:
     
     # 命令配置
     available_commands: List[str] = field(default_factory=lambda: [
-        "napcat", "help", "test", "history", "ping", "status"
+        "帮助", "角色", "语音", "好感", "好感排行"
     ])
     
     # 日志配置
@@ -51,6 +52,10 @@ class BotConfig:
     max_message_length: int = 1000
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 60
+    split_multiline_reply: bool = True
+    split_reply_interval_seconds: float = 0.35
+    max_reply_segments: int = 8
+    split_reply_sentence_count: int = 2
 
     # 本地白黑名单/许可开关（在后端 supported_contacts/groups 过滤之前额外生效）
     # 许可开关含义：
@@ -64,14 +69,22 @@ class BotConfig:
     private_deny_list: List[str] = field(default_factory=list)   # 私聊拒绝列表（QQ号字符串）
     
     def __post_init__(self):
-        """初始化后处理"""
-        # 确保机器人名字在昵称列表中
-        if self.bot_name not in self.bot_nicknames:
-            self.bot_nicknames.insert(0, self.bot_name)
+        """初始化后处理。Bot 身份由 NapCat/Server 提供，本地只保留运行开关。"""
+        self.bot_name = str(self.bot_name or "").strip()
+        self.bot_nicknames = [
+            str(name).strip()
+            for name in (self.bot_nicknames or [])
+            if str(name or "").strip()
+        ]
     
     def get_all_names(self) -> List[str]:
-        """获取所有机器人名字（包括主名和昵称）"""
-        return [self.bot_name] + self.bot_nicknames
+        """获取运行时机器人名字（身份不再来自本地持久化配置）。"""
+        names: List[str] = []
+        for name in [self.bot_name] + list(self.bot_nicknames or []):
+            text = str(name or "").strip()
+            if text and text not in names:
+                names.append(text)
+        return names
     
     def is_bot_name(self, name: str) -> bool:
         """检查是否是机器人名字"""
@@ -85,6 +98,9 @@ class BotConfig:
         """检查消息中是否包含机器人名字"""
         message_lower = message.lower()
         for name in self.get_all_names():
+            # 单字昵称极易误触发，例如“唯一”命中“唯”，名字触发至少需要两个字符。
+            if len(name.strip()) < 2:
+                continue
             if name.lower() in message_lower:
                 return True
         return False
@@ -100,9 +116,6 @@ class BotConfig:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "bot_name": self.bot_name,
-            "bot_nicknames": self.bot_nicknames,
-            "bot_description": self.bot_description,
             "command_prefix": self.command_prefix,
             "enable_global_commands": self.enable_global_commands,
             "enable_mention_reply": self.enable_mention_reply,
@@ -110,6 +123,7 @@ class BotConfig:
             "default_reply": self.default_reply,
             "error_reply": self.error_reply,
             "private_reply": self.private_reply,
+            "voice_mode_enabled": self.voice_mode_enabled,
             "keyword_responses": self.keyword_responses,
             "available_commands": self.available_commands,
             "log_level": self.log_level,
@@ -117,6 +131,10 @@ class BotConfig:
             "max_message_length": self.max_message_length,
             "rate_limit_enabled": self.rate_limit_enabled,
             "rate_limit_per_minute": self.rate_limit_per_minute,
+            "split_multiline_reply": self.split_multiline_reply,
+            "split_reply_interval_seconds": self.split_reply_interval_seconds,
+            "max_reply_segments": self.max_reply_segments,
+            "split_reply_sentence_count": self.split_reply_sentence_count,
 
             "group_default_permit": self.group_default_permit,
             "private_default_permit": self.private_default_permit,
@@ -129,7 +147,9 @@ class BotConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BotConfig':
         """从字典创建配置"""
-        return cls(**data)
+        valid_keys = set(cls.__dataclass_fields__.keys())
+        filtered = {key: value for key, value in (data or {}).items() if key in valid_keys}
+        return cls(**filtered)
     
     @classmethod
     def load_from_file(cls, file_path: str) -> 'BotConfig':

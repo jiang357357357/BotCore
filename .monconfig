@@ -24,7 +24,7 @@ SUPERUSERS=2740954024
 # [onebot] OneBot V11 / NapCat 连接
 # ==============================
 [onebot]
-WS_URLS=ws://1.13.181.58:8050
+WS_URLS=ws://127.0.0.1:3001
 ACCESS_TOKEN=M79IAmt6cCrk3Tw1
 
 # ==============================

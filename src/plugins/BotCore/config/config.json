@@ -1,7 +1,4 @@
 {
-  "bot_name": "星野唯",
-  "bot_nicknames": ["唯", "小唯", "napcat", "NapCat"],
-  "bot_description": "一个傲娇的日裔中国青梅竹马机器人",
   "command_prefix": "/",
   "enable_global_commands": true,
   "enable_mention_reply": true,
@@ -9,6 +6,7 @@
   "default_reply": "哼！本小姐收到了你的消息，但不知道如何处理...",
   "error_reply": "哼！本小姐处理消息时出了点小问题...",
   "private_reply": "哼！你私聊本小姐说：{message}\n本小姐收到了！",
+  "voice_mode_enabled": false,
   "keyword_responses": {
     "ping": "哼！本小姐在线着呢！Pong！",
     "你好": "你好！本小姐很高兴见到你～",
@@ -19,19 +17,21 @@
     "测试": "哼！测试功能正常！本小姐工作得很好！"
   },
   "available_commands": [
-    "napcat",
-    "help",
-    "test",
-    "history",
-    "ping",
-    "status"
+    "帮助",
+    "角色",
+    "语音",
+    "好感",
+    "好感排行"
   ],
   "log_level": "INFO",
   "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
   "max_message_length": 1000,
   "rate_limit_enabled": true,
   "rate_limit_per_minute": 60,
-
+  "split_multiline_reply": true,
+  "split_reply_interval_seconds": 0.35,
+  "max_reply_segments": 8,
+  "split_reply_sentence_count": 2,
   "group_default_permit": true,
   "private_default_permit": true,
   "group_allow_list": [],

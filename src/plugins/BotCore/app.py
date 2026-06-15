@@ -5,7 +5,9 @@ BotCore 插件启动模块
 """
 
 from src.System.Logs import get_logger
+import asyncio
 import os
+import time
 from pathlib import Path
 from typing import Optional
 from nonebot import get_driver
@@ -22,6 +24,10 @@ driver = get_driver()
 
 # 加载 .monconfig
 mon_config = MonConfig()
+
+# 加载机器人配置
+config_path = os.path.join(os.path.dirname(__file__), "config", "config.json")
+bot_config = BotConfig.load_from_file(config_path)
 
 
 def _load_pyproject_hub_config() -> dict:
@@ -117,7 +123,11 @@ class BotContext:
 
 
 ctx = BotContext(
-    voice_enabled=mon_config.get("features", "VOICE_MODE_ENABLED", default=True, cast=bool)
+    voice_enabled=getattr(
+        bot_config,
+        "voice_mode_enabled",
+        mon_config.get("features", "VOICE_MODE_ENABLED", default=True, cast=bool),
+    )
 )
 
 
@@ -150,21 +160,39 @@ def update_supported_keywords(keywords: list[str]):
     ctx.update_supported_keywords(keywords)
 
 
+def sync_runtime_bot_name(name: Optional[str]) -> bool:
+    """同步 NapCat 当前登录昵称到运行时触发名，不写入本地配置。"""
+    nickname = str(name or "").strip()
+    if not nickname:
+        return False
+
+    if bot_config.bot_name == nickname and bot_config.bot_nicknames == []:
+        return False
+
+    bot_config.bot_name = nickname
+    bot_config.bot_nicknames = []
+    logger.info(f"已同步 NapCat 运行时昵称: {nickname}")
+    return True
+
+
 def get_voice_mode() -> bool:
     return ctx.voice_mode_enabled
 
 
-def set_voice_mode(enabled: bool):
+def set_voice_mode(enabled: bool) -> bool:
     ctx.voice_mode_enabled = enabled
+    bot_config.voice_mode_enabled = enabled
+    saved = bot_config.save_to_file(config_path)
+    if saved:
+        logger.info(f"语音模式已持久化到配置文件: {config_path}")
+    else:
+        logger.error(f"语音模式持久化失败: {config_path}")
+    return saved
 
 
 def get_moncore_api() -> Optional[MonCoreAPI]:
     return ctx.moncore_api
 
-
-# 加载机器人配置
-config_path = os.path.join(os.path.dirname(__file__), "config", "config.json")
-bot_config = BotConfig.load_from_file(config_path)
 
 # 初始化外部服务
 external_config = Config()
@@ -183,6 +211,64 @@ connection_manager = ConnectionManager(
     hub_address=_build_hub_address(_pyproject_hub, _hub),
     hub_timeout=_get_hub_timeout(_pyproject_hub, _hub),
 )
+_moncore_reconnect_lock = asyncio.Lock()
+_last_moncore_reconnect_attempt = 0.0
+_MONCORE_RECONNECT_COOLDOWN = 10.0
+
+
+def is_moncore_ready() -> bool:
+    """判断当前 MonCore 专用通道是否可用。"""
+    ws_client = connection_manager.get_ws_client()
+    return bool(
+        ctx.moncore_api
+        and connection_manager.is_connected
+        and connection_manager.is_registered
+        and ws_client
+        and ws_client.is_connected
+    )
+
+
+async def ensure_moncore_ready(reason: str = "按需检查") -> bool:
+    """
+    确保 MonCore 可用。
+
+    启动时如果 MonHub/MonCore 还没准备好，BotCore 会继续运行。后续消息到来时，
+    这里会按需再向 MonHub 查询一次并完成注册，避免 supported_contacts/groups
+    长期为空导致所有消息被过滤。
+    """
+    global _last_moncore_reconnect_attempt
+
+    if is_moncore_ready():
+        return True
+
+    now = time.monotonic()
+    if now - _last_moncore_reconnect_attempt < _MONCORE_RECONNECT_COOLDOWN:
+        logger.debug("MonCore 当前不可用，仍在重连冷却期内，跳过本次按需查询")
+        return False
+
+    async with _moncore_reconnect_lock:
+        if is_moncore_ready():
+            return True
+
+        now = time.monotonic()
+        if now - _last_moncore_reconnect_attempt < _MONCORE_RECONNECT_COOLDOWN:
+            logger.debug("MonCore 当前不可用，仍在重连冷却期内，跳过本次按需查询")
+            return False
+
+        _last_moncore_reconnect_attempt = now
+        logger.info(f"MonCore 当前不可用，开始按需向 MonHub 查询并恢复连接：{reason}")
+
+        if connection_manager.get_ws_client():
+            await connection_manager.stop()
+        ctx.moncore_api = None
+
+        success = await connection_manager.start()
+        if success and is_moncore_ready():
+            logger.info("MonCore 按需恢复成功")
+            return True
+
+        logger.warning("MonCore 按需恢复失败，本次消息将跳过后端处理")
+        return False
 
 
 async def _on_registered_callback():
@@ -206,7 +292,7 @@ connection_manager.register_on_registered(_on_registered_callback)
 from .core.router import commands  # noqa: E402
 from .core.router import message_handlers  # noqa: E402
 
-logger.info(f"{bot_config.bot_name}插件启动模块已加载")
+logger.info("BotCore 插件启动模块已加载")
 
 
 @get_driver().on_bot_connect

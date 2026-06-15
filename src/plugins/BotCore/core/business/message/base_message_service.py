@@ -30,6 +30,21 @@ class BaseMessageService:
         from ....app import get_moncore_api
         return get_moncore_api()
 
+    async def _ensure_moncore_api(self, context_label: str):
+        """按需恢复 MonCore 连接并返回可用 API。"""
+        moncore_api = self._get_moncore_api()
+        if moncore_api:
+            return moncore_api
+
+        try:
+            from ....app import ensure_moncore_ready
+            if await ensure_moncore_ready(f"{context_label}业务调用"):
+                return self._get_moncore_api()
+        except Exception as e:
+            logger.error(f"按需恢复 MonCore 连接失败: {e}", exc_info=True)
+
+        return None
+
     @staticmethod
     def _build_audio_message(audio_path: str) -> Message:
         """构建语音消息"""
@@ -73,7 +88,7 @@ class BaseMessageService:
             event: 消息事件
             context_label: 上下文标签
         """
-        moncore_api = self._get_moncore_api()
+        moncore_api = await self._ensure_moncore_api(context_label)
         if not moncore_api:
             logger.warning(f"MonCoreAPI 未初始化，无法处理{context_label}消息")
             return None
@@ -100,7 +115,7 @@ class BaseMessageService:
 
     async def _store_message(self, event, context_label: str) -> bool:
         """存储消息到后端，不请求回复"""
-        moncore_api = self._get_moncore_api()
+        moncore_api = await self._ensure_moncore_api(context_label)
         if not moncore_api:
             logger.warning(f"MonCoreAPI 未初始化，无法存储{context_label}消息")
             return False

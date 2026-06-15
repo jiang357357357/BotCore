@@ -60,6 +60,7 @@ class ConnectionManager:
 
         self._connected_event = asyncio.Event()
         self._registered_event = asyncio.Event()
+        self._recovery_task: Optional[asyncio.Task] = None
 
         self.callback_handler = ConnectionCallbackHandler(self)
     
@@ -198,6 +199,7 @@ class ConnectionManager:
         
         # 获取机器人昵称、联系人列表和群聊列表
         bot_nickname = None
+        bot_signature = None
         contacts_list = None
         groups_list = None
         try:
@@ -213,10 +215,30 @@ class ConnectionManager:
                     if login_info:
                         bot_nickname = login_info.get('nickname')
                         logger.info(f"获取到机器人昵称: {bot_nickname}")
+                        try:
+                            from src.plugins.BotCore.app import sync_runtime_bot_name
+
+                            sync_runtime_bot_name(bot_nickname)
+                        except Exception as sync_exc:
+                            logger.warning(f"同步机器人昵称到触发列表失败: {sync_exc}")
                     else:
                         logger.warning("获取机器人登录信息为空")
                 except Exception as e:
                     logger.warning(f"获取机器人昵称失败: {e}")
+
+                # 获取机器人 QQ 个性签名
+                try:
+                    bot_signature = await asyncio.wait_for(
+                        napcat_api.get_bot_signature(qq_number), timeout=3.0
+                    )
+                    if bot_signature:
+                        logger.info("获取到机器人个性签名")
+                    else:
+                        logger.info("机器人个性签名为空")
+                except asyncio.TimeoutError:
+                    logger.warning("获取机器人个性签名超时，跳过")
+                except Exception as e:
+                    logger.warning(f"获取机器人个性签名失败: {e}")
                 
                 # 获取联系人列表（好友列表）
                 try:
@@ -254,6 +276,7 @@ class ConnectionManager:
             qq_number, 
             avatar_url=avatar_url, 
             nickname=bot_nickname,
+            signature=bot_signature,
             contacts=contacts_list,
             groups=groups_list
         )
@@ -300,6 +323,7 @@ class ConnectionManager:
         
         # 注册重连回调：重连后重新注册消息处理器
         self.ws_client.register_reconnect_callback(self._on_reconnect)
+        self.ws_client.register_reconnect_failed_callback(self._on_reconnect_failed)
         
         # 连接
         success = await self.ws_client.connect()
@@ -349,6 +373,49 @@ class ConnectionManager:
                 logger.warning(f"通知 MonCoreAPI 重连成功时出错: {e}")
             
             logger.info("重连后消息处理器已重新注册")
+
+    async def _on_reconnect_failed(self, retry_count: int):
+        """
+        专用 bot 通道重连失败后的回调。
+
+        后端注册响应里的 bot_url 是带 IP 的专用通道地址。机器换网段、
+        Hub 重新注册或服务重启后，旧 bot_url 可能永久失效；这时必须
+        放弃旧通道，重新走 MonHub 发现 -> 登录端点 -> 注册。
+        """
+        logger.warning(f"专用 bot 通道连续重连失败 {retry_count} 次，准备重新发现 MonCore 并注册")
+
+        self.is_connected = False
+        self.is_registered = False
+        self.bot_url = None
+
+        if self._recovery_task and not self._recovery_task.done():
+            logger.info("MonCore 连接恢复任务已在运行，跳过重复调度")
+            return
+
+        self._recovery_task = asyncio.create_task(self._recover_connection())
+
+    async def _recover_connection(self):
+        """重新发现 MonCore 并注册 bot。"""
+        old_client = self.ws_client
+        try:
+            if old_client:
+                await old_client.disconnect(disable_reconnect=True)
+            self.ws_client = None
+
+            retry_interval = int(os.getenv("MONCORE_RECOVERY_RETRY_INTERVAL", "15"))
+            attempt = 1
+            while not self.is_registered:
+                await asyncio.sleep(1 if attempt == 1 else retry_interval)
+                logger.info(f"开始重新执行 MonCore 连接流程 (恢复尝试 {attempt})")
+                success = await self.start()
+                if success:
+                    logger.info("MonCore 连接恢复完成")
+                    return
+
+                logger.warning(f"MonCore 连接恢复失败，{retry_interval} 秒后继续尝试")
+                attempt += 1
+        except Exception as e:
+            logger.error(f"MonCore 连接恢复任务出错: {e}", exc_info=True)
     
     async def start(self) -> bool:
         """
@@ -385,8 +452,12 @@ class ConnectionManager:
     async def stop(self):
         """停止连接"""
         try:
+            if self._recovery_task and not self._recovery_task.done():
+                self._recovery_task.cancel()
+                self._recovery_task = None
+
             if self.ws_client:
-                await self.ws_client.disconnect()
+                await self.ws_client.disconnect(disable_reconnect=True)
             
             self.is_connected = False
             self.is_registered = False

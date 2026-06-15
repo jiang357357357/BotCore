@@ -3,6 +3,7 @@ NapCat API 接口
 通过 NoneBot2 的 OneBot V11 Bot 实例与 NapCat 交互
 """
 
+import time
 from typing import Optional, Dict, Any, List
 from nonebot.adapters.onebot.v11 import Bot
 
@@ -15,11 +16,85 @@ class NapCatAPI:
     
     def __init__(self):
         self.bot: Optional[Bot] = None
+        self._login_info: Optional[Dict[str, Any]] = None
+        self._group_member_name_cache: Dict[tuple[str, str], tuple[float, str]] = {}
     
     def set_bot(self, bot: Bot):
         """设置机器人实例"""
         self.bot = bot
         logger.info("NapCat API 机器人实例已设置")
+
+    def get_cached_bot_display_name(self, user_id: str) -> Optional[str]:
+        """从已缓存的登录信息中获取机器人显示名。"""
+        user_id = str(user_id or "")
+        if not user_id:
+            return None
+
+        login_info = self._login_info or {}
+        login_user_id = str(login_info.get("user_id") or "")
+        if login_user_id == user_id:
+            return login_info.get("nickname") or login_user_id
+
+        bot_self_id = str(getattr(self.bot, "self_id", "") or "") if self.bot else ""
+        if bot_self_id == user_id:
+            return login_info.get("nickname") or bot_self_id
+
+        return None
+
+    @staticmethod
+    def _read_mapping_or_attr(value: Any, key: str, default: Any = None) -> Any:
+        """兼容 NapCat 返回的 dict、Pydantic 模型或普通对象。"""
+        if isinstance(value, dict):
+            return value.get(key, default)
+        if hasattr(value, "dict"):
+            try:
+                return value.dict().get(key, default)
+            except Exception:
+                pass
+        return getattr(value, key, default)
+
+    async def get_group_member_display_name(
+        self,
+        group_id: str,
+        user_id: str,
+        cache_ttl: float = 3600.0,
+    ) -> Optional[str]:
+        """获取群成员显示名，优先群名片，其次昵称。"""
+        group_id = str(group_id or "")
+        user_id = str(user_id or "")
+        if not group_id or not user_id or user_id.lower() == "all":
+            return None
+
+        bot_display_name = self.get_cached_bot_display_name(user_id)
+        if bot_display_name:
+            return bot_display_name
+
+        cache_key = (group_id, user_id)
+        cached = self._group_member_name_cache.get(cache_key)
+        now = time.time()
+        if cached and now - cached[0] <= cache_ttl:
+            return cached[1]
+
+        if not self.bot:
+            logger.debug(f"机器人实例未设置，无法获取群成员信息: group_id={group_id}, user_id={user_id}")
+            return None
+
+        try:
+            member_info = await self.bot.get_group_member_info(
+                group_id=int(group_id),
+                user_id=int(user_id),
+                no_cache=False,
+            )
+            card = self._read_mapping_or_attr(member_info, "card", "") or ""
+            nickname = self._read_mapping_or_attr(member_info, "nickname", "") or ""
+            display_name = str(card or nickname or "").strip()
+            if display_name:
+                self._group_member_name_cache[cache_key] = (now, display_name)
+                return display_name
+        except Exception as e:
+            logger.debug(f"获取群成员显示名失败: group_id={group_id}, user_id={user_id}, error={e}")
+
+        return None
     
     def get_user_avatar_url(self, user_id: str, size: int = 100) -> str:
         """
@@ -213,7 +288,8 @@ class NapCatAPI:
                         "user_id": str(getattr(login_info, 'user_id', '')),
                         "nickname": getattr(login_info, 'nickname', '')
                     }
-                
+
+                self._login_info = result
                 logger.info(f"成功获取机器人登录信息: {result}")
                 return result
             else:
@@ -224,3 +300,39 @@ class NapCatAPI:
             logger.error(f"获取机器人登录信息失败: {e}", exc_info=True)
             return None
 
+    async def get_bot_signature(self, user_id: Optional[str] = None) -> Optional[str]:
+        """
+        获取机器人 QQ 个性签名。
+
+        NapCat 的 get_login_info 只返回基础登录信息，个性签名在 get_stranger_info
+        的 long_nick / longNick 字段中。
+        """
+        try:
+            if not self.bot:
+                logger.error("机器人实例未设置")
+                return None
+
+            target_user_id = str(user_id or "").strip()
+            if not target_user_id:
+                login_info = self._login_info or await self.get_bot_login_info() or {}
+                target_user_id = str(login_info.get("user_id") or "").strip()
+            if not target_user_id:
+                logger.warning("缺少机器人 QQ 号，无法获取个性签名")
+                return None
+
+            stranger_info = await self.bot.get_stranger_info(
+                user_id=int(target_user_id),
+                no_cache=True,
+            )
+            signature = (
+                self._read_mapping_or_attr(stranger_info, "long_nick", None)
+                or self._read_mapping_or_attr(stranger_info, "longNick", None)
+                or ""
+            )
+            signature_text = str(signature).strip()
+            logger.info("成功获取机器人个性签名" if signature_text else "机器人个性签名为空")
+            return signature_text
+
+        except Exception as e:
+            logger.warning(f"获取机器人个性签名失败: {e}")
+            return None

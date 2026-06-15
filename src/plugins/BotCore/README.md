@@ -29,7 +29,7 @@ BotCore/
 │
 ├── core/                       # 核心业务
 │   ├── router/                # Layer 3: 路由层
-│   │   ├── commands.py        # 命令路由（/帮助 /角色 /语音）
+│   │   ├── commands.py        # 命令路由（/帮助 /角色 /语音 /好感 /好感排行）
 │   │   └── message_handlers.py # 消息路由（关键词/普通消息）
 │   │
 │   ├── business/              # Layer 4: 业务逻辑层
@@ -119,7 +119,7 @@ voice_mode_enabled: bool          # 语音模式开关
 - 只记录日志，不处理数据
 
 **文件**：
-- `commands.py`：处理命令消息（`/帮助` / `/角色` / `/语音`）
+- `commands.py`：处理命令消息（`/帮助` / `/角色` / `/语音` / `/好感` / `/好感排行`）
 - `message_handlers.py`：处理普通消息（关键词触发 / 普通消息）
 
 ### Layer 4: core/business/ - 业务逻辑层
@@ -228,7 +228,9 @@ NoneBot 启动
               → CommandService
                   → /帮助：动态获取命令列表
                   → /角色：调用后端获取角色信息
-                  → /语音：切换 voice_mode_enabled
+                  → /语音：查询或切换 voice_mode_enabled
+                  → /好感：查询当前用户的四维好感状态
+                  → /好感排行：查询当前群/当前 Bot 的好感总值排行
       
       → 普通消息
           → message_handlers.py
@@ -318,6 +320,9 @@ connection_manager.register_on_disconnected(callback)
 ### 白名单过滤
 
 后端动态推送白名单，Bot 本身不维护配置：
+
+- 私聊：发送者 QQ 在 `contacts` 中即可处理。
+- 群聊：群号在 `groups` 中，或发言人 QQ 在 `contacts` 中，任一满足即可处理。
 
 ```python
 # 后端推送 mappingHost 消息
@@ -411,6 +416,19 @@ moncore_api = get_moncore_api()
 if moncore_api:
     result = await moncore_api.store_message(event)
 ```
+
+## 命令与权限
+
+命令前缀由 NoneBot 配置控制，当前支持 `/`、`!`、`！`。
+
+| 命令 | 说明 | 权限 |
+| --- | --- | --- |
+| `/帮助` | 查看当前已注册命令 | 所有人 |
+| `/角色`、`/设定` | 查看当前 QQBot 绑定角色 | superuser，或当前群/发言人任一被后端支持 |
+| `/语音` | 查看语音模式状态 | superuser，或当前群/发言人任一被后端支持 |
+| `/语音 开启`、`/语音 关闭` | 修改全局语音模式 | superuser |
+| `/好感` | 查看自己与当前角色的四维好感值 | superuser，或当前群/发言人任一被后端支持 |
+| `/好感排行`、`/好感榜` | 查看好感总值排行；群聊中限定当前群，私聊中查看当前 Bot 全局排行 | superuser，或当前群/发言人任一被后端支持 |
 
 ### 调用 QQ API
 
