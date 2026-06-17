@@ -22,3 +22,8 @@ builtin_plugins = ["echo", "single_session"]
 ip = "127.0.0.1"
 port = 40051
 query_timeout = 5.0
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
