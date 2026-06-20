@@ -41,7 +41,7 @@ class BotConfig:
     
     # 命令配置
     available_commands: List[str] = field(default_factory=lambda: [
-        "帮助", "角色", "语音", "好感", "好感排行"
+        "帮助", "角色", "语音", "好感", "好感排行", "记忆", "记忆列表"
     ])
     
     # 日志配置

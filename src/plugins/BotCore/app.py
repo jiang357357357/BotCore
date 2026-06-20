@@ -214,6 +214,8 @@ connection_manager = ConnectionManager(
 _moncore_reconnect_lock = asyncio.Lock()
 _last_moncore_reconnect_attempt = 0.0
 _MONCORE_RECONNECT_COOLDOWN = 10.0
+_bot_info_sync_task: Optional[asyncio.Task] = None
+_BOT_INFO_SYNC_INTERVAL = float(os.getenv("MONBOT_INFO_SYNC_INTERVAL", "300"))
 
 
 def is_moncore_ready() -> bool:
@@ -285,9 +287,72 @@ async def _on_registered_callback():
             logger.info(f"MonCore API 已在专用通道连接成功后初始化 (server_ip={connection_manager.server_ip}, http_port={connection_manager.http_port})")
         else:
             logger.warning("WebSocket 客户端未就绪，MonCoreAPI 初始化延迟")
+    _ensure_bot_info_sync_task()
+    asyncio.create_task(sync_bot_info_once("registered"))
 
 
 connection_manager.register_on_registered(_on_registered_callback)
+
+
+async def sync_bot_info_once(reason: str = "manual") -> bool:
+    """从 NapCat 拉取好友/群聊列表并上报 MonCore。空快照不覆盖已有后端数据。"""
+    if not is_moncore_ready():
+        logger.debug(f"跳过 Bot 信息同步，MonCore 未就绪: {reason}")
+        return False
+    if not napcat_api.bot:
+        logger.debug(f"跳过 Bot 信息同步，NapCat bot 未就绪: {reason}")
+        return False
+
+    contacts = None
+    groups = None
+    try:
+        next_contacts = await asyncio.wait_for(napcat_api.get_friend_list(), timeout=5.0)
+        if next_contacts:
+            contacts = next_contacts
+        else:
+            logger.warning(f"Bot 信息同步拿到空好友列表，跳过覆盖: {reason}")
+    except Exception as e:
+        logger.warning(f"Bot 信息同步获取好友列表失败: {e}")
+
+    try:
+        next_groups = await asyncio.wait_for(napcat_api.get_group_list(), timeout=5.0)
+        if next_groups:
+            groups = next_groups
+        else:
+            logger.warning(f"Bot 信息同步拿到空群聊列表，跳过覆盖: {reason}")
+    except Exception as e:
+        logger.warning(f"Bot 信息同步获取群聊列表失败: {e}")
+
+    if contacts is None and groups is None:
+        logger.debug(f"Bot 信息同步无有效列表，跳过上报: {reason}")
+        return False
+
+    ws_client = connection_manager.get_ws_client()
+    if not ws_client:
+        logger.debug(f"跳过 Bot 信息同步，WebSocket 未就绪: {reason}")
+        return False
+
+    return await ws_client.send_bot_info(contacts=contacts, groups=groups)
+
+
+async def _bot_info_sync_loop():
+    """定时同步好友/群聊列表，覆盖启动后新增好友或新增群聊的场景。"""
+    while True:
+        try:
+            await asyncio.sleep(max(30.0, _BOT_INFO_SYNC_INTERVAL))
+            await sync_bot_info_once("periodic")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Bot 信息定时同步失败: {e}", exc_info=True)
+
+
+def _ensure_bot_info_sync_task():
+    global _bot_info_sync_task
+    if _bot_info_sync_task and not _bot_info_sync_task.done():
+        return
+    _bot_info_sync_task = asyncio.create_task(_bot_info_sync_loop())
+    logger.info(f"Bot 信息定时同步已启动: interval={max(30.0, _BOT_INFO_SYNC_INTERVAL):.0f}s")
 
 from .core.router import commands  # noqa: E402
 from .core.router import message_handlers  # noqa: E402
@@ -320,6 +385,10 @@ async def on_bot_connect(bot: Bot):
 @get_driver().on_shutdown
 async def shutdown_disconnect_moncore():
     """关闭时断开 MonCore 连接"""
+    global _bot_info_sync_task
+    if _bot_info_sync_task and not _bot_info_sync_task.done():
+        _bot_info_sync_task.cancel()
+        _bot_info_sync_task = None
     logger.info("正在断开 MonCore 连接...")
     await connection_manager.stop()
     logger.info("MonCore 连接已断开")

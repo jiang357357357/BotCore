@@ -413,14 +413,19 @@ class MonCoreAPI:
                 self.pending_requests.pop(request_id, None)
             return None
 
-    async def get_favorability(self, event: MessageEvent, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-        """查询当前消息发送者与当前 Bot 绑定角色的好感状态。"""
+    async def get_favorability(
+        self,
+        event: MessageEvent,
+        user_qq_number: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> Optional[Dict[str, Any]]:
+        """查询指定 QQ 用户与当前 Bot 绑定角色的好感状态；默认查当前发送者。"""
         request_id = None
         try:
             is_group = isinstance(event, GroupMessageEvent)
             session_qq_number = str(event.group_id if is_group else event.user_id)
-            user_qq_number = str(event.user_id)
-            request_id = f"favorability_self_{int(time.time() * 1000)}_{user_qq_number}"
+            target_qq_number = str(user_qq_number or event.user_id)
+            request_id = f"favorability_{int(time.time() * 1000)}_{target_qq_number}"
 
             future = asyncio.Future()
             self.pending_requests[request_id] = future
@@ -434,7 +439,7 @@ class MonCoreAPI:
                         "action": "self",
                         "session_qq_number": session_qq_number,
                         "is_group": is_group,
-                        "user_qq_number": user_qq_number,
+                        "user_qq_number": target_qq_number,
                     },
                 }
             )
@@ -497,14 +502,20 @@ class MonCoreAPI:
                 self.pending_requests.pop(request_id, None)
             return None
 
-    async def get_memories(self, event: MessageEvent, limit: int = 10, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-        """查询当前消息发送者在当前 Bot 会话中的最近记忆。"""
+    async def get_memories(
+        self,
+        event: MessageEvent,
+        user_qq_number: Optional[str] = None,
+        limit: int = 10,
+        timeout: float = 10.0,
+    ) -> Optional[Dict[str, Any]]:
+        """查询指定 QQ 用户在当前 Bot 会话中的最近记忆；默认查当前发送者。"""
         request_id = None
         try:
             is_group = isinstance(event, GroupMessageEvent)
             session_qq_number = str(event.group_id if is_group else event.user_id)
-            user_qq_number = str(event.user_id)
-            request_id = f"memory_self_{int(time.time() * 1000)}_{user_qq_number}"
+            target_qq_number = str(user_qq_number or event.user_id)
+            request_id = f"memory_{int(time.time() * 1000)}_{target_qq_number}"
 
             future = asyncio.Future()
             self.pending_requests[request_id] = future
@@ -517,7 +528,7 @@ class MonCoreAPI:
                         "request_id": request_id,
                         "session_qq_number": session_qq_number,
                         "is_group": is_group,
-                        "user_qq_number": user_qq_number,
+                        "user_qq_number": target_qq_number,
                         "limit": limit,
                     },
                 }

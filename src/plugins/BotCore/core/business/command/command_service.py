@@ -116,8 +116,9 @@ class CommandService:
   权限：管理员，或当前群/发言人已被后端支持。
 
 {prefix}好感
-  查看你与当前角色的好感数值。
-  权限：管理员，或当前群/发言人已被后端支持。
+{prefix}好感 @某人
+  查看你与当前角色的好感数值；管理员可 @某人 查询别人。
+  权限：普通用户只能查自己；管理员可查别人。
 
 {prefix}好感排行
 {prefix}好感榜
@@ -126,8 +127,9 @@ class CommandService:
 
 {prefix}记忆
 {prefix}记忆列表
-  查看你与当前角色在当前会话中的最近记忆。
-  权限：管理员，或当前群/发言人已被后端支持。
+{prefix}记忆 @某人
+  查看你与当前角色在当前会话中的最近记忆；管理员可 @某人 查询别人。
+  权限：普通用户只能查自己；管理员可查别人。
 
 管理
 {prefix}语音 开启
@@ -281,9 +283,15 @@ class CommandService:
 
         profile = data.get("profile") or {}
         character_name = data.get("character_name") or "当前角色"
+        user_qq_number = str(data.get("user_qq_number") or profile.get("qq_number") or "").strip()
+        display_name = str(profile.get("display_name") or "").strip()
+        if display_name and user_qq_number and display_name != user_qq_number:
+            user_label = f"{display_name}({user_qq_number})"
+        else:
+            user_label = user_qq_number or "该用户"
         total = self._format_score(profile.get("total", data.get("total", 0)))
         return "\n".join([
-            f"{character_name} 对你的好感状态：",
+            f"{character_name} 对 {user_label} 的好感状态：",
             "维度 | 数值",
             "总值 | " + total,
             "喜爱 | " + self._format_score(profile.get("affection")),
@@ -322,12 +330,14 @@ class CommandService:
             return data.get("message", "（有些困扰）暂时查不到你的记忆。") if data else "（有些困扰）暂时查不到你的记忆。"
 
         character_name = data.get("character_name") or "当前角色"
+        user_qq_number = str(data.get("user_qq_number") or "").strip()
+        user_label = user_qq_number or "该用户"
         items = data.get("items") or []
         if not items:
-            return f"{character_name} 暂时还没有记录与你相关的记忆。"
+            return f"{character_name} 暂时还没有记录与 {user_label} 相关的记忆。"
 
         lines = [
-            f"{character_name} 记录的最近记忆：",
+            f"{character_name} 记录的 {user_label} 最近记忆：",
             "序号 | 时间 | 内容",
         ]
         for index, item in enumerate(items[:10], start=1):

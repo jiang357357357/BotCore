@@ -324,8 +324,8 @@ class WebSocketClient:
     
     async def send_bot_info(
         self,
-        contacts: list[dict],
-        groups: list[dict]
+        contacts: Optional[list[dict]] = None,
+        groups: Optional[list[dict]] = None,
     ) -> bool:
         """
         发送机器人好友和群聊列表到后端
@@ -360,15 +360,26 @@ class WebSocketClient:
         Returns:
             发送是否成功
         """
+        data: Dict[str, Any] = {}
+        if contacts is not None:
+            data["contacts"] = contacts
+        if groups is not None:
+            data["groups"] = groups
+
+        if not data:
+            logger.debug("跳过发送机器人信息到后端: contacts/groups 均为空")
+            return False
+
         message = {
             "command": "bot_info",
-            "data": {
-                "contacts": contacts,
-                "groups": groups
-            }
+            "data": data,
         }
         
-        logger.info(f"发送机器人信息到后端: contacts={len(contacts)}, groups={len(groups)}")
+        logger.info(
+            "发送机器人信息到后端: "
+            f"contacts={len(contacts) if contacts is not None else 'skip'}, "
+            f"groups={len(groups) if groups is not None else 'skip'}"
+        )
         return await self.send(message)
     
     async def send_mapping_update_confirm(self) -> bool:

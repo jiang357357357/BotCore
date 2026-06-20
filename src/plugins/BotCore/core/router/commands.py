@@ -70,6 +70,35 @@ async def _require_admin_permission(matcher, event: MessageEvent) -> bool:
     return True
 
 
+def _extract_target_qq(event: MessageEvent, args: Message) -> str:
+    """从命令参数中提取目标 QQ；默认当前发送者。"""
+    try:
+        for segment in args:
+            if segment.type != "at":
+                continue
+            qq = str(segment.data.get("qq") or "").strip()
+            if qq and qq.lower() != "all":
+                return qq
+    except Exception as e:
+        logger.debug(f"解析命令 @ 参数失败: {e}")
+
+    text = args.extract_plain_text().strip() if args else ""
+    for item in text.replace("，", " ").replace(",", " ").split():
+        if item.isdigit() and 5 <= len(item) <= 12:
+            return item
+    return str(event.user_id)
+
+
+async def _require_target_permission(matcher, event: MessageEvent, target_qq: str) -> bool:
+    """普通用户只能查自己；superuser 可以查指定 QQ。"""
+    if str(target_qq) == str(event.user_id):
+        return True
+    if _is_superuser(event):
+        return True
+    await matcher.finish(Message("只能查询自己的信息；查询别人需要管理员权限。"))
+    return False
+
+
 # ==================== /帮助 命令 ====================
 
 # 注意：on_command() 默认 block=False，必须显式设置 block=True
@@ -147,7 +176,7 @@ favorability_cmd = on_command("好感", block=True)
 
 @favorability_cmd.handle()
 async def handle_favorability(event: MessageEvent, args: Message = CommandArg()):
-    """查看当前用户和 Bot 绑定角色之间的好感状态。"""
+    """查看指定用户和 Bot 绑定角色之间的好感状态；默认查自己。"""
     if isinstance(event, GroupMessageEvent):
         logger.info(f"收到好感查询命令 - 群聊: {event.group_id}, 用户: {event.user_id}, 昵称: {event.sender.nickname}")
     else:
@@ -158,6 +187,9 @@ async def handle_favorability(event: MessageEvent, args: Message = CommandArg())
         return
     if not await _require_read_permission(favorability_cmd, event):
         return
+    target_qq = _extract_target_qq(event, args)
+    if not await _require_target_permission(favorability_cmd, event, target_qq):
+        return
 
     try:
         from ...app import get_moncore_api
@@ -166,7 +198,7 @@ async def handle_favorability(event: MessageEvent, args: Message = CommandArg())
             await favorability_cmd.finish(Message("MonCore API 未就绪，暂时无法查询好感状态。"))
             return
 
-        data = await moncore_api.get_favorability(event)
+        data = await moncore_api.get_favorability(event, user_qq_number=target_qq)
         await favorability_cmd.finish(Message(command_service.format_favorability_text(data)))
     except FinishedException:
         raise
@@ -215,7 +247,7 @@ memory_cmd = on_command("记忆", aliases={"记忆列表"}, block=True)
 
 @memory_cmd.handle()
 async def handle_memory(event: MessageEvent, args: Message = CommandArg()):
-    """查看当前用户和 Bot 绑定角色在当前会话中的最近记忆。"""
+    """查看指定用户和 Bot 绑定角色在当前会话中的最近记忆；默认查自己。"""
     if isinstance(event, GroupMessageEvent):
         logger.info(f"收到记忆查询命令 - 群聊: {event.group_id}, 用户: {event.user_id}, 昵称: {event.sender.nickname}")
     else:
@@ -226,6 +258,9 @@ async def handle_memory(event: MessageEvent, args: Message = CommandArg()):
         return
     if not await _require_read_permission(memory_cmd, event):
         return
+    target_qq = _extract_target_qq(event, args)
+    if not await _require_target_permission(memory_cmd, event, target_qq):
+        return
 
     try:
         from ...app import get_moncore_api
@@ -234,7 +269,7 @@ async def handle_memory(event: MessageEvent, args: Message = CommandArg()):
             await memory_cmd.finish(Message("MonCore API 未就绪，暂时无法查询记忆。"))
             return
 
-        data = await moncore_api.get_memories(event)
+        data = await moncore_api.get_memories(event, user_qq_number=target_qq)
         await memory_cmd.finish(Message(command_service.format_memories_text(data)))
     except FinishedException:
         raise

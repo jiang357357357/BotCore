@@ -270,15 +270,18 @@ class ConnectionManager:
         except Exception as e:
             logger.warning(f"获取机器人信息失败: {e}，将使用默认值", exc_info=True)
         
-        # 发送注册请求（包含QQ号、头像URL、昵称、联系人列表和群聊列表）
+        # 发送注册请求（包含QQ号、头像URL、昵称、联系人列表和群聊列表）。
+        # NapCat 启动早期偶尔会返回空列表；空快照不用于覆盖后端已有对象列表。
+        contacts_payload = contacts_list if contacts_list else None
+        groups_payload = groups_list if groups_list else None
         logger.info(f"正在注册机器人: QQ号 {qq_number}, 昵称 {bot_nickname}, 头像URL {avatar_url}, contacts={len(contacts_list) if contacts_list else 0}, groups={len(groups_list) if groups_list else 0}")
         success = await self.ws_client.register(
             qq_number, 
             avatar_url=avatar_url, 
             nickname=bot_nickname,
             signature=bot_signature,
-            contacts=contacts_list,
-            groups=groups_list
+            contacts=contacts_payload,
+            groups=groups_payload,
         )
         
         if success:
