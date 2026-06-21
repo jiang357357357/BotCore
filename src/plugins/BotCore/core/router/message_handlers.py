@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 # 这里我们想要处理所有非命令消息（关键词和普通消息），所以保持 block=True
 message_matcher = on_message(priority=10, block=True)
 
-SENTENCE_END_CHARS = set("。！？!?")
+SENTENCE_END_CHARS = set("。！？!?~～")
 
 
 def _limit_reply_parts(parts: list[str]) -> list[str]:
