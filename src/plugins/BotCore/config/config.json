@@ -28,7 +28,7 @@
   "max_message_length": 1000,
   "rate_limit_enabled": true,
   "rate_limit_per_minute": 60,
-  "split_multiline_reply": true,
+  "split_multiline_reply": false,
   "split_reply_interval_seconds": 0.35,
   "max_reply_segments": 8,
   "split_reply_sentence_count": 2,

@@ -202,6 +202,7 @@ class WebSocketClient:
         try:
             if not self.is_connected or not self.websocket:
                 logger.error("WebSocket 未连接，无法发送消息")
+                await self._handle_send_disconnected("发送前发现 WebSocket 未连接")
                 return False
             
             message_str = json.dumps(message, ensure_ascii=False)
@@ -211,7 +212,17 @@ class WebSocketClient:
             
         except Exception as e:
             logger.error(f"发送消息失败: {e}")
+            await self._handle_send_disconnected("发送消息失败后标记断开")
             return False
+
+    async def _handle_send_disconnected(self, reason: str):
+        """发送路径发现连接不可用时，也要触发恢复流程。"""
+        self.is_connected = False
+        if not self.is_registered or not self.enable_reconnect:
+            return
+
+        logger.warning(f"{reason}，启动自动重连")
+        await self._start_reconnect()
     
     async def send_store_message(
         self,

@@ -18,6 +18,7 @@ class NapCatAPI:
         self.bot: Optional[Bot] = None
         self._login_info: Optional[Dict[str, Any]] = None
         self._group_member_name_cache: Dict[tuple[str, str], tuple[float, str]] = {}
+        self._group_member_alias_cache: Dict[str, tuple[float, Dict[str, str]]] = {}
     
     def set_bot(self, bot: Bot):
         """设置机器人实例"""
@@ -95,6 +96,67 @@ class NapCatAPI:
             logger.debug(f"获取群成员显示名失败: group_id={group_id}, user_id={user_id}, error={e}")
 
         return None
+
+    @staticmethod
+    def _add_group_member_alias_candidate(candidates: Dict[str, set[str]], alias: Any, user_id: Any) -> None:
+        alias_text = str(alias or "").strip().lstrip("@")
+        user_id_text = str(user_id or "").strip()
+        if not alias_text or not user_id_text or user_id_text.lower() == "all":
+            return
+        candidates.setdefault(alias_text, set()).add(user_id_text)
+
+    async def get_group_member_aliases(
+        self,
+        group_id: str,
+        cache_ttl: float = 600.0,
+    ) -> Dict[str, str]:
+        """获取群成员显示名映射，只返回未冲突的别名。"""
+        group_id = str(group_id or "")
+        if not group_id:
+            return {}
+
+        cached = self._group_member_alias_cache.get(group_id)
+        now = time.time()
+        if cached and now - cached[0] <= cache_ttl:
+            return cached[1]
+
+        if not self.bot:
+            logger.debug(f"机器人实例未设置，无法获取群成员列表: group_id={group_id}")
+            return {}
+
+        try:
+            get_member_list = getattr(self.bot, "get_group_member_list", None)
+            if callable(get_member_list):
+                member_list = await get_member_list(
+                    group_id=int(group_id),
+                    no_cache=False,
+                )
+            else:
+                member_list = await self.bot.call_api(
+                    "get_group_member_list",
+                    group_id=int(group_id),
+                    no_cache=False,
+                )
+        except Exception as e:
+            logger.debug(f"获取群成员列表失败: group_id={group_id}, error={e}")
+            return {}
+
+        candidates: Dict[str, set[str]] = {}
+        for member in member_list or []:
+            user_id = self._read_mapping_or_attr(member, "user_id", "")
+            card = self._read_mapping_or_attr(member, "card", "") or ""
+            nickname = self._read_mapping_or_attr(member, "nickname", "") or ""
+            self._add_group_member_alias_candidate(candidates, user_id, user_id)
+            self._add_group_member_alias_candidate(candidates, card, user_id)
+            self._add_group_member_alias_candidate(candidates, nickname, user_id)
+
+        aliases = {
+            alias: next(iter(user_ids))
+            for alias, user_ids in candidates.items()
+            if len(user_ids) == 1
+        }
+        self._group_member_alias_cache[group_id] = (now, aliases)
+        return aliases
     
     def get_user_avatar_url(self, user_id: str, size: int = 100) -> str:
         """

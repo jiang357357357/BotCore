@@ -3,8 +3,6 @@
 使用 on_message() 处理关键词触发和普通消息，负责消息分发
 """
 
-import asyncio
-
 from nonebot import on_message
 from nonebot.exception import FinishedException
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, Message, GroupMessageEvent, PrivateMessageEvent
@@ -26,89 +24,10 @@ logger = get_logger(__name__)
 # 这里我们想要处理所有非命令消息（关键词和普通消息），所以保持 block=True
 message_matcher = on_message(priority=10, block=True)
 
-SENTENCE_END_CHARS = set("。！？!?~～")
-
-
-def _limit_reply_parts(parts: list[str]) -> list[str]:
-    """限制拆分条数，避免长回复刷屏。"""
-    max_segments = max(1, int(getattr(bot_config, "max_reply_segments", 8) or 8))
-    if len(parts) <= max_segments:
-        return parts
-
-    head = parts[: max_segments - 1]
-    tail = "\n".join(parts[max_segments - 1:])
-    return head + [tail]
-
-
-def _split_by_sentence_count(text: str) -> list[str]:
-    """没有显式换行时，每 N 个句末标点拆成一条。"""
-    sentence_count = max(0, int(getattr(bot_config, "split_reply_sentence_count", 2) or 0))
-    if sentence_count <= 0:
-        return [text.strip()] if text.strip() else []
-
-    parts: list[str] = []
-    current: list[str] = []
-    end_count = 0
-
-    for char in text.strip():
-        current.append(char)
-        if char not in SENTENCE_END_CHARS:
-            continue
-
-        end_count += 1
-        if end_count >= sentence_count:
-            part = "".join(current).strip()
-            if part:
-                parts.append(part)
-            current = []
-            end_count = 0
-
-    tail = "".join(current).strip()
-    if tail:
-        parts.append(tail)
-
-    return parts
-
-def _split_reply_message(reply: Message) -> list[Message]:
-    """拆分纯文本回复；非纯文本消息保持原样。"""
-    try:
-        if not getattr(bot_config, "split_multiline_reply", True):
-            return [reply]
-
-        segments = list(reply)
-        if not segments or any(segment.type != "text" for segment in segments):
-            return [reply]
-
-        text = reply.extract_plain_text()
-        lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n")]
-        parts = [line for line in lines if line]
-        if len(parts) <= 1:
-            parts = _split_by_sentence_count(text)
-
-        parts = _limit_reply_parts(parts)
-        if len(parts) <= 1:
-            return [reply]
-
-        return [Message(part) for part in parts]
-    except Exception as e:
-        logger.warning(f"拆分多行回复失败，回退为单条发送: {e}")
-        return [reply]
-
 
 async def _finish_reply(bot: Bot, event: MessageEvent, reply: Message, reason: str) -> None:
-    """发送回复；多行纯文本自动拆成多条 QQ 消息。"""
-    messages = _split_reply_message(reply)
-    if len(messages) <= 1:
-        await message_matcher.finish(reply)
-        return
-
-    interval = max(0.0, float(getattr(bot_config, "split_reply_interval_seconds", 0.35) or 0.0))
-    logger.info(f"{reason} - 多行回复拆分发送: {len(messages)} 条")
-    for item in messages[:-1]:
-        await bot.send(event, item)
-        if interval:
-            await asyncio.sleep(interval)
-    await message_matcher.finish(messages[-1])
+    """发送回复；无论正文是否包含换行，都只发送一次 QQ 消息。"""
+    await message_matcher.finish(reply)
 
 
 def _get_supported_contacts():

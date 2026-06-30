@@ -52,7 +52,7 @@ class BotConfig:
     max_message_length: int = 1000
     rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 60
-    split_multiline_reply: bool = True
+    split_multiline_reply: bool = False
     split_reply_interval_seconds: float = 0.35
     max_reply_segments: int = 8
     split_reply_sentence_count: int = 2

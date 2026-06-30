@@ -48,6 +48,11 @@ class MonCoreAPI:
         return getattr(event, "original_message", None) or event.get_message()
 
     @staticmethod
+    def _get_message_id(event: MessageEvent) -> str:
+        message_id = getattr(event, "message_id", None)
+        return str(message_id) if message_id is not None else ""
+
+    @staticmethod
     async def _resolve_at_display(event: MessageEvent, segment) -> str:
         qq = str(segment.data.get("qq", "") or "")
         if not qq:
@@ -99,6 +104,7 @@ class MonCoreAPI:
         message = MonCoreAPI._get_event_message(event)
         try:
             content_parts = []
+            image_index = 0
             for segment in message:
                 segment_type = segment.type
                 if segment_type == "text":
@@ -106,13 +112,20 @@ class MonCoreAPI:
                     if text:
                         content_parts.append(text)
                 elif segment_type == "image":
-                    content_parts.append("[图片]")
+                    image_index += 1
+                    summary = str(segment.data.get("summary") or "").strip()
+                    if summary and summary != "[图片]":
+                        content_parts.append(f"[图片{image_index}: {summary}]")
+                    else:
+                        content_parts.append(f"[图片{image_index}]")
                 elif segment_type == "face":
                     content_parts.append("[表情]")
                 elif segment_type == "record":
                     content_parts.append("[语音]")
                 elif segment_type == "video":
                     content_parts.append("[视频]")
+                elif segment_type == "reply":
+                    continue
                 elif segment_type == "at":
                     content_parts.append(await MonCoreAPI._resolve_at_display(event, segment))
                 else:
@@ -128,6 +141,106 @@ class MonCoreAPI:
             return "[消息解析错误]"
 
     @staticmethod
+    def _extract_message_image_metadata(message) -> list[Dict[str, Any]]:
+        """提取 OneBot 图片段元数据，供 MonCore 进行视觉理解。"""
+        images: list[Dict[str, Any]] = []
+        try:
+            for index, segment in enumerate((seg for seg in message if seg.type == "image"), 1):
+                data = dict(getattr(segment, "data", {}) or {})
+                image: Dict[str, Any] = {"index": index, "type": "image"}
+                for key in ("url", "file", "summary", "sub_type", "file_size"):
+                    value = data.get(key)
+                    if value is None:
+                        continue
+                    text = str(value).strip()
+                    if text:
+                        image[key] = text
+                if image.get("url") or image.get("file") or image.get("summary"):
+                    images.append(image)
+        except Exception as e:
+            logger.debug(f"提取图片元数据失败: {e}")
+        return images
+
+    @staticmethod
+    def _extract_image_metadata(event: MessageEvent) -> list[Dict[str, Any]]:
+        return MonCoreAPI._extract_message_image_metadata(MonCoreAPI._get_event_message(event))
+
+    @staticmethod
+    def _extract_message_content_for_metadata(message) -> str:
+        content_parts = []
+        image_index = 0
+        for segment in message:
+            segment_type = segment.type
+            if segment_type == "reply":
+                continue
+            if segment_type == "text":
+                text = str(segment.data.get("text") or "").strip()
+                if text:
+                    content_parts.append(text)
+            elif segment_type == "image":
+                image_index += 1
+                summary = str(segment.data.get("summary") or "").strip()
+                if summary and summary != "[图片]":
+                    content_parts.append(f"[图片{image_index}: {summary}]")
+                else:
+                    content_parts.append(f"[图片{image_index}]")
+            elif segment_type == "at":
+                qq = str(segment.data.get("qq", "") or "")
+                content_parts.append("@全体成员" if qq.lower() == "all" else f"@用户{qq}")
+            elif segment_type == "face":
+                content_parts.append("[表情]")
+            elif segment_type == "record":
+                content_parts.append("[语音]")
+            elif segment_type == "video":
+                content_parts.append("[视频]")
+            else:
+                content_parts.append(f"[{segment_type}]")
+
+        if content_parts:
+            return " ".join(content_parts)
+        plain_text = message.extract_plain_text()
+        return plain_text.strip() if plain_text and plain_text.strip() else ""
+
+    @staticmethod
+    def _extract_reply_metadata(event: MessageEvent) -> Dict[str, Any]:
+        reply_metadata: Dict[str, Any] = {}
+        try:
+            reply = getattr(event, "reply", None)
+            if reply:
+                message = getattr(reply, "message", None)
+                sender = getattr(reply, "sender", None)
+                message_id = getattr(reply, "message_id", None)
+                real_id = getattr(reply, "real_id", None)
+                reply_metadata = {
+                    "message_id": str(message_id) if message_id is not None else "",
+                    "real_id": str(real_id) if real_id is not None else "",
+                    "message_type": str(getattr(reply, "message_type", "") or ""),
+                    "sender_user_id": str(getattr(sender, "user_id", "") or ""),
+                    "sender_nickname": str(getattr(sender, "card", None) or getattr(sender, "nickname", None) or ""),
+                }
+                if message is not None:
+                    content = MonCoreAPI._extract_message_content_for_metadata(message)
+                    if content:
+                        reply_metadata["content"] = content
+                    images = MonCoreAPI._extract_message_image_metadata(message)
+                    if images:
+                        reply_metadata["images"] = images
+
+            if not reply_metadata:
+                message = MonCoreAPI._get_event_message(event)
+                for segment in message:
+                    if segment.type != "reply":
+                        continue
+                    message_id = segment.data.get("id") or segment.data.get("message_id")
+                    if message_id is not None:
+                        reply_metadata["message_id"] = str(message_id)
+                    break
+        except Exception as e:
+            logger.debug(f"提取回复引用元数据失败: {e}")
+
+        return {key: value for key, value in reply_metadata.items() if value not in (None, "", [])}
+
+    @staticmethod
     async def _build_event_metadata(event: MessageEvent, content: str) -> Dict[str, Any]:
         """构建消息元数据，用于 MonCore 保留群内真实发送者。"""
         is_group = isinstance(event, GroupMessageEvent)
@@ -138,13 +251,21 @@ class MonCoreAPI:
         display_name = sender_nickname or sender_user_id or "用户"
 
         metadata = {
+            "onebot_message_id": MonCoreAPI._get_message_id(event),
             "sender_user_id": sender_user_id,
             "sender_nickname": sender_nickname,
             "display_name": f"{display_name}({sender_user_id})" if sender_user_id and sender_nickname else display_name,
             "is_group": is_group,
             "raw_content": content,
+            "to_me": bool(event.is_tome()) if hasattr(event, "is_tome") else False,
             "mentions": await MonCoreAPI._extract_mentions(event),
         }
+        images = MonCoreAPI._extract_image_metadata(event)
+        if images:
+            metadata["images"] = images
+        reply_to = MonCoreAPI._extract_reply_metadata(event)
+        if reply_to:
+            metadata["reply_to"] = reply_to
         if group_id:
             metadata["group_id"] = group_id
         return metadata
