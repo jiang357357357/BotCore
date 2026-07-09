@@ -5,7 +5,7 @@ NapCat API 接口
 
 import time
 from typing import Optional, Dict, Any, List
-from nonebot.adapters.onebot.v11 import Bot
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 
 from src.System.Logs import get_logger
 
@@ -24,6 +24,38 @@ class NapCatAPI:
         """设置机器人实例"""
         self.bot = bot
         logger.info("NapCat API 机器人实例已设置")
+
+    async def send_text_message(self, target_type: str, target_id: str, content: str) -> Dict[str, Any]:
+        """向 QQ 好友或群聊发送纯文本消息。"""
+        if not self.bot:
+            raise RuntimeError("机器人实例未设置")
+
+        normalized_type = str(target_type or "").strip().lower()
+        normalized_target = str(target_id or "").strip()
+        text = str(content or "").strip()
+        if normalized_type not in {"user", "group"}:
+            raise ValueError("target_type 必须是 user 或 group")
+        if not normalized_target:
+            raise ValueError("缺少 QQ 号/群号")
+        if not text:
+            raise ValueError("消息内容不能为空")
+
+        message = Message(MessageSegment.text(text))
+        if normalized_type == "group":
+            api_name = "send_group_msg"
+            result = await self.bot.call_api(api_name, group_id=int(normalized_target), message=message)
+        else:
+            api_name = "send_private_msg"
+            result = await self.bot.call_api(api_name, user_id=int(normalized_target), message=message)
+
+        message_id = self._read_mapping_or_attr(result, "message_id", "")
+        logger.info(f"QQ 消息发送成功: type={normalized_type} target={normalized_target} message_id={message_id}")
+        return {
+            "target_type": normalized_type,
+            "target_id": normalized_target,
+            "message_id": str(message_id or ""),
+            "api": api_name,
+        }
 
     def get_cached_bot_display_name(self, user_id: str) -> Optional[str]:
         """从已缓存的登录信息中获取机器人显示名。"""

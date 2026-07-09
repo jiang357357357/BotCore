@@ -210,6 +210,7 @@ connection_manager = ConnectionManager(
     enable_discovery=False,
     hub_address=_build_hub_address(_pyproject_hub, _hub),
     hub_timeout=_get_hub_timeout(_pyproject_hub, _hub),
+    pairing_token=_mc.get("PAIRING_TOKEN") or os.getenv("MON_QQBOT_PAIRING_TOKEN"),
 )
 _moncore_reconnect_lock = asyncio.Lock()
 _last_moncore_reconnect_attempt = 0.0
@@ -275,9 +276,9 @@ async def ensure_moncore_ready(reason: str = "按需检查") -> bool:
 
 async def _on_registered_callback():
     """注册成功后的回调（此时已经连接专用通道）"""
-    if ctx.moncore_api is None:
-        ws_client = connection_manager.get_ws_client()
-        if ws_client and connection_manager.is_connected:
+    ws_client = connection_manager.get_ws_client()
+    if ws_client and connection_manager.is_connected:
+        if ctx.moncore_api is None:
             ctx.moncore_api = MonCoreAPI(
                 ws_client,
                 server_ip=connection_manager.server_ip,
@@ -286,7 +287,17 @@ async def _on_registered_callback():
             )
             logger.info(f"MonCore API 已在专用通道连接成功后初始化 (server_ip={connection_manager.server_ip}, http_port={connection_manager.http_port})")
         else:
-            logger.warning("WebSocket 客户端未就绪，MonCoreAPI 初始化延迟")
+            ctx.moncore_api.ws_client = ws_client
+            ctx.moncore_api.server_ip = connection_manager.server_ip
+            ctx.moncore_api.http_port = connection_manager.http_port
+            ctx.moncore_api.http_host = connection_manager.http_host
+            ctx.moncore_api.register_ws_handlers()
+            logger.info(
+                "MonCore API 已重新绑定到当前专用通道 "
+                f"(server_ip={connection_manager.server_ip}, http_port={connection_manager.http_port})"
+            )
+    else:
+        logger.warning("WebSocket 客户端未就绪，MonCoreAPI 初始化延迟")
     _ensure_bot_info_sync_task()
     asyncio.create_task(sync_bot_info_once("registered"))
 

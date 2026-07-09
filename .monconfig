@@ -34,6 +34,7 @@ ACCESS_TOKEN=M79IAmt6cCrk3Tw1
 IP=
 HTTP_HOST=localhost
 WS_PORT=8000
+PAIRING_TOKEN=
 
 # ==============================
 # [hub] MonHub 消息中转站

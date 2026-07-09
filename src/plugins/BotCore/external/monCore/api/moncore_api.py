@@ -38,10 +38,15 @@ class MonCoreAPI:
         self.reply_callbacks: list[Callable] = []  # 回复回调函数列表
         
         # 注册消息处理器
+        self.register_ws_handlers()
+
+    def register_ws_handlers(self):
+        """注册 MonCore 下发消息处理器。重连替换 ws_client 后需要再次调用。"""
         self.ws_client.register_handler("reply", self._handle_reply)
         self.ws_client.register_handler("store", self._handle_store_response)
         self.ws_client.register_handler("favorability", self._handle_favorability_response)
         self.ws_client.register_handler("memory", self._handle_memory_response)
+        self.ws_client.register_handler("sendMessageHost", self._handle_send_message_host)
 
     @staticmethod
     def _get_event_message(event: MessageEvent):
@@ -759,6 +764,58 @@ class MonCoreAPI:
                 
         except Exception as e:
             logger.error(f"处理回复消息时出错: {e}")
+
+    async def _send_message_host_ack(self, sub_command: str, data: Dict[str, Any]):
+        await self.ws_client.send(
+            {
+                "command": "sendMessageBot",
+                "subCommand": sub_command,
+                "data": data,
+            }
+        )
+
+    async def _handle_send_message_host(self, message: Dict[str, Any]):
+        """处理 MonCore 主动下发的 QQ 发送命令。"""
+        data = message.get("data", {}) if isinstance(message.get("data"), dict) else {}
+        request_id = str(data.get("request_id") or "")
+        target_type = str(data.get("target_type") or "")
+        target_qq_number = str(data.get("target_qq_number") or "")
+        content = str(data.get("content") or "")
+        try:
+            from src.plugins.BotCore.app import napcat_api
+
+            if not napcat_api:
+                raise RuntimeError("NapCat API 未初始化")
+            result = await napcat_api.send_text_message(
+                target_type=target_type,
+                target_id=target_qq_number,
+                content=content,
+            )
+            payload = {
+                "request_id": request_id,
+                "target_type": target_type,
+                "target_qq_number": target_qq_number,
+                "message_id": result.get("message_id") or "",
+                "api": result.get("api") or "",
+                "status": "sent",
+            }
+            await self._send_message_host_ack("success", payload)
+        except Exception as e:
+            logger.error(
+                f"处理主动 QQ 发信失败: request_id={request_id} "
+                f"target={target_type}:{target_qq_number} error={e}",
+                exc_info=True,
+            )
+            await self._send_message_host_ack(
+                "error",
+                {
+                    "request_id": request_id,
+                    "target_type": target_type,
+                    "target_qq_number": target_qq_number,
+                    "message": str(e),
+                    "status": "failed",
+                },
+            )
     
     async def _handle_store_response(self, message: Dict[str, Any]):
         """

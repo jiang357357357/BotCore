@@ -111,7 +111,8 @@ class WebSocketClient:
         nickname: Optional[str] = None,
         signature: Optional[str] = None,
         contacts: Optional[list] = None,
-        groups: Optional[list] = None
+        groups: Optional[list] = None,
+        pairing_token: Optional[str] = None,
     ) -> bool:
         """
         注册机器人
@@ -125,6 +126,7 @@ class WebSocketClient:
                 "avatar_url": "https://q1.qlogo.cn/g?b=qq&nk=123456789&s=100",
                 "nickname": "机器人昵称",
                 "signature": "QQ 个性签名",
+                "pairing_token": "Mon Web 生成的一次性绑定令牌",
                 "contacts": [{"user_id": "123456789", "nickname": "好友昵称", "avatar_url": "..."}],
                 "groups": [{"group_id": "888888888", "group_name": "群名称", "avatar_url": "..."}]
             }
@@ -161,6 +163,9 @@ class WebSocketClient:
 
             if signature is not None:
                 register_data["signature"] = signature
+
+            if pairing_token:
+                register_data["pairing_token"] = pairing_token
             
             # 如果提供了联系人列表，添加到数据中
             if contacts is not None:
@@ -178,7 +183,11 @@ class WebSocketClient:
             }
             
             await self.send(register_message)
-            logger.info(f"已发送注册请求: QQ号 {qq_number}, 昵称 {nickname}, contacts={len(contacts) if contacts else 0}, groups={len(groups) if groups else 0}")
+            logger.info(
+                f"已发送注册请求: QQ号 {qq_number}, 昵称 {nickname}, "
+                f"contacts={len(contacts) if contacts else 0}, groups={len(groups) if groups else 0}, "
+                f"pairing_token={'yes' if pairing_token else 'no'}"
+            )
             
             # 等待注册响应（在消息处理器中处理）
             # 这里只是发送请求，实际响应会在 _receive_messages 中处理

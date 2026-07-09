@@ -31,6 +31,7 @@ class ConnectionManager:
         enable_discovery: bool = True,
         hub_address: Optional[str] = None,
         hub_timeout: float = 5.0,
+        pairing_token: Optional[str] = None,
     ):
         """
         Args:
@@ -53,6 +54,7 @@ class ConnectionManager:
         self.enable_discovery = enable_discovery
         self.hub_address = hub_address
         self.hub_timeout = hub_timeout
+        self.pairing_token = pairing_token or os.getenv("MON_QQBOT_PAIRING_TOKEN")
 
         self.ws_client: Optional[WebSocketClient] = None
         self.server_ip: Optional[str] = None
@@ -63,6 +65,18 @@ class ConnectionManager:
         self._recovery_task: Optional[asyncio.Task] = None
 
         self.callback_handler = ConnectionCallbackHandler(self)
+
+    def _load_pairing_token(self) -> Optional[str]:
+        token = os.getenv("MON_QQBOT_PAIRING_TOKEN") or self.pairing_token
+        try:
+            from src.System.MonConfig.loader import MonConfig
+
+            config_token = MonConfig().get("moncore", "PAIRING_TOKEN", default=None)
+            if config_token:
+                token = config_token
+        except Exception as exc:
+            logger.debug(f"读取 QQBot 绑定令牌失败，继续使用运行期缓存: {exc}")
+        return token or None
     
     @property
     def is_connected(self) -> bool:
@@ -274,7 +288,12 @@ class ConnectionManager:
         # NapCat 启动早期偶尔会返回空列表；空快照不用于覆盖后端已有对象列表。
         contacts_payload = contacts_list if contacts_list else None
         groups_payload = groups_list if groups_list else None
-        logger.info(f"正在注册机器人: QQ号 {qq_number}, 昵称 {bot_nickname}, 头像URL {avatar_url}, contacts={len(contacts_list) if contacts_list else 0}, groups={len(groups_list) if groups_list else 0}")
+        self.pairing_token = self._load_pairing_token()
+        logger.info(
+            f"正在注册机器人: QQ号 {qq_number}, 昵称 {bot_nickname}, 头像URL {avatar_url}, "
+            f"contacts={len(contacts_list) if contacts_list else 0}, groups={len(groups_list) if groups_list else 0}, "
+            f"pairing_token={'yes' if self.pairing_token else 'no'}"
+        )
         success = await self.ws_client.register(
             qq_number, 
             avatar_url=avatar_url, 
@@ -282,6 +301,7 @@ class ConnectionManager:
             signature=bot_signature,
             contacts=contacts_payload,
             groups=groups_payload,
+            pairing_token=self.pairing_token,
         )
         
         if success:
@@ -369,8 +389,7 @@ class ConnectionManager:
                     if moncore_api.ws_client != self.ws_client:
                         moncore_api.ws_client = self.ws_client
                         # 重新注册 MonCoreAPI 的消息处理器
-                        moncore_api.ws_client.register_handler("reply", moncore_api._handle_reply)
-                        moncore_api.ws_client.register_handler("store", moncore_api._handle_store_response)
+                        moncore_api.register_ws_handlers()
                         logger.info("已更新 MonCoreAPI 的 WebSocket 客户端引用并重新注册处理器")
             except Exception as e:
                 logger.warning(f"通知 MonCoreAPI 重连成功时出错: {e}")
