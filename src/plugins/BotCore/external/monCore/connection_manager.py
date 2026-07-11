@@ -424,7 +424,7 @@ class ConnectionManager:
                 await old_client.disconnect(disable_reconnect=True)
             self.ws_client = None
 
-            retry_interval = int(os.getenv("MONCORE_RECOVERY_RETRY_INTERVAL", "15"))
+            retry_interval = int(os.getenv("MONCORE_RECOVERY_RETRY_INTERVAL", "5"))
             attempt = 1
             while not self.is_registered:
                 await asyncio.sleep(1 if attempt == 1 else retry_interval)
@@ -438,6 +438,15 @@ class ConnectionManager:
                 attempt += 1
         except Exception as e:
             logger.error(f"MonCore 连接恢复任务出错: {e}", exc_info=True)
+
+    def schedule_registration_recovery(self) -> None:
+        """确保首次注册失败后持续重试，并在令牌写入后自动完成注册。"""
+        if self.is_registered:
+            return
+        if self._recovery_task and not self._recovery_task.done():
+            return
+        self._recovery_task = asyncio.create_task(self._recover_connection())
+        logger.info("已启动 MonCore 注册恢复任务，等待服务或绑定令牌就绪")
     
     async def start(self) -> bool:
         """

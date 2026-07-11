@@ -389,6 +389,7 @@ async def on_bot_connect(bot: Bot):
             logger.info("MonCore 连接成功，系统已就绪")
         else:
             logger.error("MonCore 连接失败，系统将继续运行但无法与后端通信")
+            connection_manager.schedule_registration_recovery()
     else:
         logger.info("MonCore 已连接，跳过重复连接")
 

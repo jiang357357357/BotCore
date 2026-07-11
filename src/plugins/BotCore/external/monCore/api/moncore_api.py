@@ -47,6 +47,17 @@ class MonCoreAPI:
         self.ws_client.register_handler("favorability", self._handle_favorability_response)
         self.ws_client.register_handler("memory", self._handle_memory_response)
         self.ws_client.register_handler("sendMessageHost", self._handle_send_message_host)
+        self.ws_client.register_handler("sync_bot_info", self._handle_sync_bot_info)
+
+    async def _handle_sync_bot_info(self, message: Dict[str, Any]):
+        """响应 Mon Web 手动刷新，立即从 NapCat 拉取好友和群聊。"""
+        try:
+            from src.plugins.BotCore.app import sync_bot_info_once
+
+            synced = await sync_bot_info_once("manual_refresh")
+            logger.info(f"手动 Bot 信息同步完成: success={synced}")
+        except Exception as exc:
+            logger.error(f"手动 Bot 信息同步失败: {exc}", exc_info=True)
 
     @staticmethod
     def _get_event_message(event: MessageEvent):
