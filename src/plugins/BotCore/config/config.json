@@ -6,7 +6,7 @@
   "default_reply": "哼！本小姐收到了你的消息，但不知道如何处理...",
   "error_reply": "哼！本小姐处理消息时出了点小问题...",
   "private_reply": "哼！你私聊本小姐说：{message}\n本小姐收到了！",
-  "voice_mode_enabled": false,
+  "voice_mode_enabled": true,
   "keyword_responses": {
     "ping": "哼！本小姐在线着呢！Pong！",
     "你好": "你好！本小姐很高兴见到你～",
