@@ -210,7 +210,7 @@ connection_manager = ConnectionManager(
     enable_discovery=False,
     hub_address=_build_hub_address(_pyproject_hub, _hub),
     hub_timeout=_get_hub_timeout(_pyproject_hub, _hub),
-    pairing_token=_mc.get("PAIRING_TOKEN") or os.getenv("MON_QQBOT_PAIRING_TOKEN"),
+    pairing_token=os.getenv("MON_QQBOT_PAIRING_TOKEN") or _mc.get("PAIRING_TOKEN"),
 )
 _moncore_reconnect_lock = asyncio.Lock()
 _last_moncore_reconnect_attempt = 0.0

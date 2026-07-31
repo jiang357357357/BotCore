@@ -113,6 +113,8 @@ class WebSocketClient:
         contacts: Optional[list] = None,
         groups: Optional[list] = None,
         pairing_token: Optional[str] = None,
+        device_id: Optional[str] = None,
+        device_credential: Optional[str] = None,
     ) -> bool:
         """
         注册机器人
@@ -127,6 +129,8 @@ class WebSocketClient:
                 "nickname": "机器人昵称",
                 "signature": "QQ 个性签名",
                 "pairing_token": "Mon Web 生成的一次性绑定令牌",
+                "device_id": "BotCore 实例的稳定设备标识",
+                "device_credential": "首次绑定后由 MonCore 签发的长期设备凭证",
                 "contacts": [{"user_id": "123456789", "nickname": "好友昵称", "avatar_url": "..."}],
                 "groups": [{"group_id": "888888888", "group_name": "群名称", "avatar_url": "..."}]
             }
@@ -166,6 +170,11 @@ class WebSocketClient:
 
             if pairing_token:
                 register_data["pairing_token"] = pairing_token
+
+            if device_id:
+                register_data["device_id"] = device_id
+            if device_credential:
+                register_data["device_credential"] = device_credential
             
             # 如果提供了联系人列表，添加到数据中
             if contacts is not None:
@@ -186,7 +195,8 @@ class WebSocketClient:
             logger.info(
                 f"已发送注册请求: QQ号 {qq_number}, 昵称 {nickname}, "
                 f"contacts={len(contacts) if contacts else 0}, groups={len(groups) if groups else 0}, "
-                f"pairing_token={'yes' if pairing_token else 'no'}"
+                f"pairing_token={'yes' if pairing_token else 'no'}, "
+                f"device_credential={'yes' if device_credential else 'no'}"
             )
             
             # 等待注册响应（在消息处理器中处理）

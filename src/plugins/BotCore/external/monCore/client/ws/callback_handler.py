@@ -38,6 +38,7 @@ class ConnectionCallbackHandler:
             "data": {
                 "bot_id": "3977489248",
                 "bot_url": "ws://...",
+                "device_credential": "首次配对时返回，后续重连使用",
                 "contacts": ["123456789", "987654321"],  // 可选
                 "groups": ["888888888"],                  // 可选
                 "keywords": ["关键词1", "关键词2"]        // 可选
@@ -53,6 +54,11 @@ class ConnectionCallbackHandler:
                 data = message.get("data", {})
                 bot_id = data.get("bot_id")
                 bot_url = data.get("bot_url")
+                device_credential = data.get("device_credential")
+
+                if device_credential:
+                    self.connection_manager.accept_device_credential(device_credential)
+                    logger.info("BotCore 设备凭证已安全保存，一次性绑定令牌已删除")
                 
                 # 处理映射配置（contacts 和 groups）
                 # 注意：即使 contacts 和 groups 都是空列表，也应该更新（空列表表示没有配置）
@@ -224,4 +230,3 @@ class ConnectionCallbackHandler:
                 
         except Exception as e:
             logger.error(f"处理关键词更新消息时出错: {e}", exc_info=True)
-

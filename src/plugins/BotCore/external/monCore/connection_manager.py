@@ -12,6 +12,7 @@ from nonebot.adapters.onebot.v11 import Bot
 
 from .client import WebSocketClient, ConnectionCallbackHandler
 from .client.hub_discovery import discover_via_hub, ServerInfo
+from .device_credential_store import DeviceCredentialStore
 from src.System.Logs import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +55,8 @@ class ConnectionManager:
         self.enable_discovery = enable_discovery
         self.hub_address = hub_address
         self.hub_timeout = hub_timeout
-        self.pairing_token = pairing_token or os.getenv("MON_QQBOT_PAIRING_TOKEN")
+        self.pairing_token = pairing_token
+        self.credential_store = DeviceCredentialStore()
 
         self.ws_client: Optional[WebSocketClient] = None
         self.server_ip: Optional[str] = None
@@ -67,16 +69,12 @@ class ConnectionManager:
         self.callback_handler = ConnectionCallbackHandler(self)
 
     def _load_pairing_token(self) -> Optional[str]:
-        token = os.getenv("MON_QQBOT_PAIRING_TOKEN") or self.pairing_token
-        try:
-            from src.System.MonConfig.loader import MonConfig
+        return self.credential_store.pairing_token() or self.pairing_token or None
 
-            config_token = MonConfig().get("moncore", "PAIRING_TOKEN", default=None)
-            if config_token:
-                token = config_token
-        except Exception as exc:
-            logger.debug(f"读取 QQBot 绑定令牌失败，继续使用运行期缓存: {exc}")
-        return token or None
+    def accept_device_credential(self, credential: str) -> None:
+        self.credential_store.save_device_credential(credential)
+        self.credential_store.clear_pairing_token()
+        self.pairing_token = None
     
     @property
     def is_connected(self) -> bool:
@@ -289,10 +287,13 @@ class ConnectionManager:
         contacts_payload = contacts_list if contacts_list else None
         groups_payload = groups_list if groups_list else None
         self.pairing_token = self._load_pairing_token()
+        device_id = self.credential_store.device_id()
+        device_credential = self.credential_store.device_credential()
         logger.info(
             f"正在注册机器人: QQ号 {qq_number}, 昵称 {bot_nickname}, 头像URL {avatar_url}, "
             f"contacts={len(contacts_list) if contacts_list else 0}, groups={len(groups_list) if groups_list else 0}, "
-            f"pairing_token={'yes' if self.pairing_token else 'no'}"
+            f"pairing_token={'yes' if self.pairing_token else 'no'}, "
+            f"device_credential={'yes' if device_credential else 'no'}"
         )
         success = await self.ws_client.register(
             qq_number, 
@@ -302,6 +303,8 @@ class ConnectionManager:
             contacts=contacts_payload,
             groups=groups_payload,
             pairing_token=self.pairing_token,
+            device_id=device_id,
+            device_credential=device_credential,
         )
         
         if success:
