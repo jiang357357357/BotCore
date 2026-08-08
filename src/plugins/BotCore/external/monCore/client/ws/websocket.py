@@ -354,6 +354,9 @@ class WebSocketClient:
     
     async def send_bot_info(
         self,
+        nickname: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+        signature: Optional[str] = None,
         contacts: Optional[list[dict]] = None,
         groups: Optional[list[dict]] = None,
     ) -> bool:
@@ -391,13 +394,19 @@ class WebSocketClient:
             发送是否成功
         """
         data: Dict[str, Any] = {}
+        if nickname is not None:
+            data["nickname"] = nickname
+        if avatar_url is not None:
+            data["avatar_url"] = avatar_url
+        if signature is not None:
+            data["signature"] = signature
         if contacts is not None:
             data["contacts"] = contacts
         if groups is not None:
             data["groups"] = groups
 
         if not data:
-            logger.debug("跳过发送机器人信息到后端: contacts/groups 均为空")
+            logger.debug("跳过发送机器人信息到后端: 资料与 contacts/groups 均为空")
             return False
 
         message = {

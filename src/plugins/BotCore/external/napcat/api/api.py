@@ -57,6 +57,39 @@ class NapCatAPI:
             "api": api_name,
         }
 
+    async def get_message_history(
+        self,
+        target_type: str,
+        target_id: str,
+        count: int = 100,
+        message_seq: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Read recent native QQ history from NapCat."""
+        if not self.bot:
+            raise RuntimeError("机器人实例未设置")
+        normalized_type = str(target_type or "").strip().lower()
+        normalized_target = str(target_id or "").strip()
+        limit = max(1, min(int(count or 100), 100))
+        if normalized_type == "group":
+            result = await self.bot.call_api(
+                "get_group_msg_history",
+                group_id=int(normalized_target),
+                message_seq=int(message_seq or 0),
+                count=limit,
+            )
+        elif normalized_type == "user":
+            result = await self.bot.call_api(
+                "get_friend_msg_history",
+                user_id=int(normalized_target),
+                message_seq=int(message_seq or 0),
+                count=limit,
+            )
+        else:
+            raise ValueError("target_type 必须是 user 或 group")
+        data = result if isinstance(result, dict) else self._read_mapping_or_attr(result, "data", result)
+        messages = data.get("messages") if isinstance(data, dict) else []
+        return messages if isinstance(messages, list) else []
+
     def get_cached_bot_display_name(self, user_id: str) -> Optional[str]:
         """从已缓存的登录信息中获取机器人显示名。"""
         user_id = str(user_id or "")
@@ -382,6 +415,31 @@ class NapCatAPI:
                         "user_id": str(getattr(login_info, 'user_id', '')),
                         "nickname": getattr(login_info, 'nickname', '')
                     }
+
+                # get_login_info 可能保留当前 NTQQ 登录会话的旧昵称。对机器人自身再做
+                # 一次明确禁用缓存的资料查询，以手机端修改后的公开资料为准。
+                user_id = str(result.get("user_id") or "").strip()
+                login_nickname = str(result.get("nickname") or "").strip()
+                if user_id:
+                    try:
+                        stranger_info = await self.bot.get_stranger_info(
+                            user_id=int(user_id),
+                            no_cache=True,
+                        )
+                        fresh_nickname = str(
+                            self._read_mapping_or_attr(stranger_info, "nickname", "")
+                            or self._read_mapping_or_attr(stranger_info, "nick", "")
+                            or ""
+                        ).strip()
+                        logger.info(
+                            "机器人昵称资料核对: "
+                            f"get_login_info={login_nickname!r}, "
+                            f"get_stranger_info(no_cache=true)={fresh_nickname!r}"
+                        )
+                        if fresh_nickname:
+                            result["nickname"] = fresh_nickname
+                    except Exception as profile_error:
+                        logger.warning(f"无缓存查询机器人资料失败，沿用登录昵称: {profile_error}")
 
                 self._login_info = result
                 logger.info(f"成功获取机器人登录信息: {result}")

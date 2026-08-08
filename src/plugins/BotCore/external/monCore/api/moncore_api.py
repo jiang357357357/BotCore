@@ -47,6 +47,7 @@ class MonCoreAPI:
         self.ws_client.register_handler("favorability", self._handle_favorability_response)
         self.ws_client.register_handler("memory", self._handle_memory_response)
         self.ws_client.register_handler("sendMessageHost", self._handle_send_message_host)
+        self.ws_client.register_handler("historyHost", self._handle_history_host)
         self.ws_client.register_handler("sync_bot_info", self._handle_sync_bot_info)
 
     async def _handle_sync_bot_info(self, message: Dict[str, Any]):
@@ -784,6 +785,35 @@ class MonCoreAPI:
                 "data": data,
             }
         )
+
+    async def _handle_history_host(self, message: Dict[str, Any]):
+        data = message.get("data", {}) if isinstance(message.get("data"), dict) else {}
+        request_id = str(data.get("request_id") or "")
+        try:
+            from src.plugins.BotCore.app import napcat_api
+
+            messages = await napcat_api.get_message_history(
+                str(data.get("target_type") or ""),
+                str(data.get("target_qq_number") or ""),
+                int(data.get("limit") or 100),
+                int(data.get("message_seq") or 0),
+            )
+            await self.ws_client.send(
+                {
+                    "command": "historyBot",
+                    "subCommand": "success",
+                    "data": {"request_id": request_id, "messages": messages},
+                }
+            )
+        except Exception as error:
+            logger.error(f"读取 QQ 原生历史失败: request_id={request_id} error={error}", exc_info=True)
+            await self.ws_client.send(
+                {
+                    "command": "historyBot",
+                    "subCommand": "error",
+                    "data": {"request_id": request_id, "message": str(error)},
+                }
+            )
 
     async def _handle_send_message_host(self, message: Dict[str, Any]):
         """处理 MonCore 主动下发的 QQ 发送命令。"""

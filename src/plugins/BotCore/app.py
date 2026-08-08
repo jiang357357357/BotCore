@@ -306,7 +306,7 @@ connection_manager.register_on_registered(_on_registered_callback)
 
 
 async def sync_bot_info_once(reason: str = "manual") -> bool:
-    """从 NapCat 拉取好友/群聊列表并上报 MonCore。空快照不覆盖已有后端数据。"""
+    """从 NapCat 拉取机器人资料、好友和群聊并上报 MonCore。"""
     if not is_moncore_ready():
         logger.debug(f"跳过 Bot 信息同步，MonCore 未就绪: {reason}")
         return False
@@ -316,6 +316,23 @@ async def sync_bot_info_once(reason: str = "manual") -> bool:
 
     contacts = None
     groups = None
+    nickname = None
+    avatar_url = None
+    signature = None
+
+    try:
+        login_info = await asyncio.wait_for(napcat_api.get_bot_login_info(), timeout=5.0)
+        if login_info:
+            nickname = str(login_info.get("nickname") or "").strip() or None
+            qq_number = str(login_info.get("user_id") or login_info.get("userId") or "").strip()
+            if qq_number:
+                # 版本参数绕过浏览器对固定 QQ 头像 URL 的旧缓存。
+                avatar_url = f"https://q1.qlogo.cn/g?b=qq&nk={qq_number}&s=100&v={int(time.time())}"
+                signature = await asyncio.wait_for(napcat_api.get_bot_signature(qq_number), timeout=5.0)
+            if nickname:
+                sync_runtime_bot_name(nickname)
+    except Exception as e:
+        logger.warning(f"Bot 信息同步获取账号资料失败: {e}")
     try:
         next_contacts = await asyncio.wait_for(napcat_api.get_friend_list(), timeout=5.0)
         if next_contacts:
@@ -334,8 +351,8 @@ async def sync_bot_info_once(reason: str = "manual") -> bool:
     except Exception as e:
         logger.warning(f"Bot 信息同步获取群聊列表失败: {e}")
 
-    if contacts is None and groups is None:
-        logger.debug(f"Bot 信息同步无有效列表，跳过上报: {reason}")
+    if nickname is None and avatar_url is None and signature is None and contacts is None and groups is None:
+        logger.debug(f"Bot 信息同步无有效资料，跳过上报: {reason}")
         return False
 
     ws_client = connection_manager.get_ws_client()
@@ -343,7 +360,13 @@ async def sync_bot_info_once(reason: str = "manual") -> bool:
         logger.debug(f"跳过 Bot 信息同步，WebSocket 未就绪: {reason}")
         return False
 
-    return await ws_client.send_bot_info(contacts=contacts, groups=groups)
+    return await ws_client.send_bot_info(
+        nickname=nickname,
+        avatar_url=avatar_url,
+        signature=signature,
+        contacts=contacts,
+        groups=groups,
+    )
 
 
 async def _bot_info_sync_loop():
