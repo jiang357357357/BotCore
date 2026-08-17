@@ -8,7 +8,6 @@ from src.System.Logs import get_logger
 import asyncio
 import os
 import time
-from pathlib import Path
 from typing import Optional
 from nonebot import get_driver
 from nonebot.adapters.onebot.v11 import Bot
@@ -28,52 +27,6 @@ mon_config = MonConfig()
 # 加载机器人配置
 config_path = os.path.join(os.path.dirname(__file__), "config", "config.json")
 bot_config = BotConfig.load_from_file(config_path)
-
-
-def _load_pyproject_hub_config() -> dict:
-    """读取 pyproject.toml 中的 [tool.monbot.hub] 配置。"""
-    pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
-    if not pyproject_path.is_file():
-        return {}
-
-    try:
-        try:
-            import tomllib
-        except ModuleNotFoundError:
-            import tomli as tomllib
-
-        with pyproject_path.open("rb") as f:
-            data = tomllib.load(f)
-        return (
-            data.get("tool", {})
-            .get("monbot", {})
-            .get("hub", {})
-        )
-    except Exception as e:
-        logger.warning(f"读取 pyproject.toml Hub 配置失败: {e}")
-        return {}
-
-
-def _build_hub_address(pyproject_hub: dict, monconfig_hub: dict) -> Optional[str]:
-    """优先使用 pyproject.toml 的 Hub 配置，兼容 .monconfig ADDRESS。"""
-    address = pyproject_hub.get("address")
-    if address:
-        return str(address)
-
-    ip = pyproject_hub.get("ip")
-    port = pyproject_hub.get("port")
-    if ip and port:
-        return f"tcp://{ip}:{int(port)}"
-
-    return monconfig_hub.get("ADDRESS") or None
-
-
-def _get_hub_timeout(pyproject_hub: dict, monconfig_hub: dict) -> float:
-    """优先使用 pyproject.toml 的 Hub 查询超时配置。"""
-    timeout = pyproject_hub.get("query_timeout")
-    if timeout is not None:
-        return float(timeout)
-    return float(monconfig_hub.get("QUERY_TIMEOUT", "5"))
 
 
 class BotContext:
@@ -201,15 +154,10 @@ napcat_api = NapCatAPI()
 
 # 从 .monconfig [moncore] 读取后端连接参数
 _mc = mon_config.section("moncore")
-_hub = mon_config.section("hub")
-_pyproject_hub = _load_pyproject_hub_config()
 connection_manager = ConnectionManager(
-    manual_ip=_mc.get("IP") or None,
-    ws_port=int(_mc.get("WS_PORT", "8000")),
-    http_host=_mc.get("HTTP_HOST", "localhost"),
-    enable_discovery=False,
-    hub_address=_build_hub_address(_pyproject_hub, _hub),
-    hub_timeout=_get_hub_timeout(_pyproject_hub, _hub),
+    server_ip=_mc.get("IP") or "127.0.0.1",
+    ws_port=int(_mc.get("WS_PORT", "40011")),
+    http_host=_mc.get("HTTP_HOST", "127.0.0.1"),
     pairing_token=os.getenv("MON_QQBOT_PAIRING_TOKEN") or _mc.get("PAIRING_TOKEN"),
 )
 _moncore_reconnect_lock = asyncio.Lock()
@@ -235,8 +183,8 @@ async def ensure_moncore_ready(reason: str = "按需检查") -> bool:
     """
     确保 MonCore 可用。
 
-    启动时如果 MonHub/MonCore 还没准备好，BotCore 会继续运行。后续消息到来时，
-    这里会按需再向 MonHub 查询一次并完成注册，避免 supported_contacts/groups
+    启动时如果 MonCore 还没准备好，BotCore 会继续运行。后续消息到来时，
+    这里会按需再按固定本机地址连接一次，避免 supported_contacts/groups
     长期为空导致所有消息被过滤。
     """
     global _last_moncore_reconnect_attempt
@@ -259,7 +207,7 @@ async def ensure_moncore_ready(reason: str = "按需检查") -> bool:
             return False
 
         _last_moncore_reconnect_attempt = now
-        logger.info(f"MonCore 当前不可用，开始按需向 MonHub 查询并恢复连接：{reason}")
+        logger.info(f"MonCore 当前不可用，开始按固定本机地址恢复连接：{reason}")
 
         if connection_manager.get_ws_client():
             await connection_manager.stop()

@@ -7,7 +7,6 @@ requires-python = ">=3.9, <4.0"
 dependencies = [
     "aiohttp>=3.8.0",
     "aiofiles>=23.0.0",
-    "pyzmq>=25.0.0",
 ]
 
 [tool.nonebot]
@@ -17,11 +16,6 @@ adapters = [
 plugins = ["src.plugins.BotCore"]
 plugin_dirs = ["src/plugins"]
 builtin_plugins = ["echo", "single_session"]
-
-[tool.monbot.hub]
-ip = "127.0.0.1"
-port = 40051
-query_timeout = 5.0
 
 [[tool.uv.index]]
 name = "aliyun"

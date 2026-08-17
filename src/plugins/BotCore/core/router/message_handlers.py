@@ -162,7 +162,7 @@ def _get_supported_keywords():
 
 
 async def _ensure_backend_ready(event: MessageEvent) -> bool:
-    """确保 MonCore 已连接；启动阶段失败后，消息到来时按需向 MonHub 重试一次。"""
+    """确保 MonCore 已连接；启动阶段失败后，消息到来时按固定地址重试一次。"""
     try:
         from ...app import ensure_moncore_ready
 

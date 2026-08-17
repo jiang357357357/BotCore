@@ -31,17 +31,10 @@ ACCESS_TOKEN=M79IAmt6cCrk3Tw1
 # [moncore] MonCore AI 后端连接
 # ==============================
 [moncore]
-IP=
-HTTP_HOST=localhost
-WS_PORT=8000
+IP=127.0.0.1
+HTTP_HOST=127.0.0.1
+WS_PORT=40011
 PAIRING_TOKEN=
-
-# ==============================
-# [hub] MonHub 消息中转站
-# ==============================
-[hub]
-ADDRESS=tcp://127.0.0.1:40051
-QUERY_TIMEOUT=5
 
 # ==============================
 # [features] 功能开关
@@ -85,6 +78,6 @@ SCRIPT_VENV_WIN_REMOVE=Script/EnvTools/win/remove_env.ps1
 # 1. 修改配置后需要重启机器人
 # 2. ACCESS_TOKEN 必须与 NapCat 配置一致
 # 3. WS_URLS 指向你的 NapCat WebSocket 地址
-# 4. MonCore 地址优先通过 MonHub 查询，MONCORE.IP 仅作为手动兜底
+# 4. MonCore 固定使用本机 127.0.0.1:40011
 # 5. BotCore 复用父级 BotLauncher 的 .venv，环境脚本为代理入口
 # ============================================================

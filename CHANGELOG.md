@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 移除 MonHub 发现链路，BotCore 改为通过固定本机地址直连 MonCore，并统一模块 `.monconfig` 加载边界。
+
 ## [1.8.0] - 2026-08-05
 
 ### Changed

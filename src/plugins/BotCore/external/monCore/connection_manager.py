@@ -1,6 +1,6 @@
 """
 连接管理器
-管理 MonCore 后端的连接流程：MonHub 查询 → 手动 IP → 注册 → 建立专用连接
+管理 MonCore 后端的固定本机连接流程：连接 → 注册 → 建立专用通道
 只负责连接管理，不处理回调逻辑
 """
 
@@ -11,7 +11,6 @@ from nonebot import get_bot
 from nonebot.adapters.onebot.v11 import Bot
 
 from .client import WebSocketClient, ConnectionCallbackHandler
-from .client.hub_discovery import discover_via_hub, ServerInfo
 from .device_credential_store import DeviceCredentialStore
 from src.System.Logs import get_logger
 
@@ -24,42 +23,29 @@ class ConnectionManager:
     def __init__(
         self,
         qq_number: Optional[str] = None,
-        manual_ip: Optional[str] = None,
-        discovery_port: int = 8888,
-        ws_port: int = 8000,
+        server_ip: str = "127.0.0.1",
+        ws_port: int = 40011,
         http_port: Optional[int] = None,
         http_host: Optional[str] = None,
-        enable_discovery: bool = True,
-        hub_address: Optional[str] = None,
-        hub_timeout: float = 5.0,
         pairing_token: Optional[str] = None,
     ):
         """
         Args:
             qq_number: QQ 号（None 则从 NoneBot 获取）
-            manual_ip: 手动配置的服务器 IP（MonHub 失败时使用）
-            discovery_port: 已废弃，保留参数仅用于兼容旧调用
+            server_ip: 固定 MonCore 本机地址
             ws_port: WebSocket 端口默认值
             http_port: HTTP 端口（默认与 ws_port 相同）
             http_host: HTTP 访问地址
-            enable_discovery: 已废弃，MonBot 现在通过 MonHub 获取 MonCore 地址
-            hub_address: MonHub ZMQ 地址（如 tcp://127.0.0.1:40051），None 则跳过 MonHub 查询
-            hub_timeout: MonHub 查询超时秒数
         """
         self.qq_number = qq_number
-        self.manual_ip = manual_ip or os.getenv("MONCORE_IP")
-        self.discovery_port = discovery_port
+        self.server_ip = os.getenv("MONCORE_IP") or server_ip
         self.ws_port = ws_port
         self.http_port = http_port if http_port is not None else ws_port
-        self.http_host = http_host or os.getenv("MONCORE_HTTP_HOST", "localhost")
-        self.enable_discovery = enable_discovery
-        self.hub_address = hub_address
-        self.hub_timeout = hub_timeout
+        self.http_host = http_host or os.getenv("MONCORE_HTTP_HOST", "127.0.0.1")
         self.pairing_token = pairing_token
         self.credential_store = DeviceCredentialStore()
 
         self.ws_client: Optional[WebSocketClient] = None
-        self.server_ip: Optional[str] = None
         self.bot_url: Optional[str] = None
 
         self._connected_event = asyncio.Event()
@@ -121,42 +107,14 @@ class ConnectionManager:
         return None
     
     async def discover_server(self) -> Optional[str]:
-        """
-        发现服务器 IP 地址
-        优先级：MonHub 查询 > 手动配置 IP
-        """
-        # 1) 通过 MonHub 查询
-        if self.hub_address:
-            logger.info(f"尝试通过 MonHub 查询 MonCore 地址 ({self.hub_address})...")
-            server_info = await asyncio.to_thread(
-                discover_via_hub, self.hub_address, self.hub_timeout
-            )
-            if server_info:
-                self._apply_server_info(server_info)
-                return server_info.ip
-            logger.warning("MonHub 查询失败，尝试使用手动配置的 IP")
-        else:
-            logger.warning("未配置 MonHub 地址，尝试使用手动配置的 IP")
-
-        # 2) 手动配置的 IP
-        if self.manual_ip:
-            logger.info(f"使用手动配置的服务器 IP: {self.manual_ip}")
-            self.server_ip = self.manual_ip
-            return self.manual_ip
-
-        logger.warning("未发现 MonCore 服务器：MonHub/手动IP 均失败，将跳过后端连接")
-        return None
-
-    def _apply_server_info(self, info: ServerInfo):
-        """应用服务器信息"""
-        self.server_ip = info.ip
-        if info.ws_port:
-            self.ws_port = info.ws_port
-            if not info.http_port:
-                self.http_port = info.ws_port
-        if info.http_port:
-            self.http_port = info.http_port
-        logger.info(f"MonCore 连接参数: ip={self.server_ip}, ws_port={self.ws_port}, http_port={self.http_port}")
+        """返回固定 MonCore 本机地址。"""
+        logger.info(
+            "使用固定 MonCore 地址: ip=%s, ws_port=%s, http_port=%s",
+            self.server_ip,
+            self.ws_port,
+            self.http_port,
+        )
+        return self.server_ip
     
     async def connect_login_endpoint(self) -> bool:
         """
@@ -404,8 +362,8 @@ class ConnectionManager:
         专用 bot 通道重连失败后的回调。
 
         后端注册响应里的 bot_url 是带 IP 的专用通道地址。机器换网段、
-        Hub 重新注册或服务重启后，旧 bot_url 可能永久失效；这时必须
-        放弃旧通道，重新走 MonHub 发现 -> 登录端点 -> 注册。
+        MonCore 服务重启后，旧 bot_url 可能永久失效；这时必须
+        放弃旧通道，重新连接固定本机登录端点并注册。
         """
         logger.warning(f"专用 bot 通道连续重连失败 {retry_count} 次，准备重新发现 MonCore 并注册")
 
