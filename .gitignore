@@ -61,6 +61,7 @@ logs/
 
 # Runtime data
 data/
+.run/
 
 # Environment (contains secrets)
 Config/ENV/

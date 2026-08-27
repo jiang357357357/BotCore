@@ -4,9 +4,13 @@
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-27
+
 ### Changed
 
 - 移除 MonHub 发现链路，BotCore 改为通过固定本机地址直连 MonCore，并统一模块 `.monconfig` 加载边界。
+- OneBot WebSocket 地址和访问令牌支持由工作区私有环境配置覆盖，运行目录不再污染 Git 状态。
+- 设备身份存储会沿模块配置祖先定位 Mon 工作区根目录，统一复用根 `.run/qqbot` 中的长期凭证。
 
 ## [1.8.0] - 2026-08-05
 

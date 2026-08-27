@@ -25,7 +25,7 @@ SUPERUSERS=2740954024
 # ==============================
 [onebot]
 WS_URLS=ws://127.0.0.1:3001
-ACCESS_TOKEN=M79IAmt6cCrk3Tw1
+ACCESS_TOKEN=
 
 # ==============================
 # [moncore] MonCore AI 后端连接
@@ -76,7 +76,7 @@ SCRIPT_VENV_WIN_REMOVE=Script/EnvTools/win/remove_env.ps1
 # 注意事项
 # ============================================================
 # 1. 修改配置后需要重启机器人
-# 2. ACCESS_TOKEN 必须与 NapCat 配置一致
+# 2. MON_ONEBOT_ACCESS_TOKEN 必须与 NapCat 配置一致，并保存在工作区 Config/ENV/bot.env
 # 3. WS_URLS 指向你的 NapCat WebSocket 地址
 # 4. MonCore 固定使用本机 127.0.0.1:40011
 # 5. BotCore 复用父级 BotLauncher 的 .venv，环境脚本为代理入口

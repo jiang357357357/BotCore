@@ -29,8 +29,9 @@ class DeviceCredentialStore:
         config = MonConfig()
         loaded = config.loaded_files()
         for path in loaded:
-            if (path.parent / ".monworkspace").is_file():
-                return path.parent / ".run" / "qqbot"
+            for candidate in (path.parent, *path.parent.parents):
+                if (candidate / ".monworkspace").is_file():
+                    return candidate / ".run" / "qqbot"
         root = loaded[0].parent if loaded else Path.cwd()
         return root / ".run" / "qqbot"
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MonBot - NoneBot2 机器人主程序入口
-所有配置从 .monconfig 读取，不再依赖 .env 文件
+非敏感配置从 .monconfig 读取，凭据从工作区 Config/ENV/bot.env 读取
 """
 
 import sys
@@ -13,6 +13,27 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 os.chdir(str(_project_root))
+
+
+def _load_workspace_env(filename: str) -> None:
+    workspace_root = next(
+        (path for path in (_project_root, *_project_root.parents) if (path / ".monworkspace").is_file()),
+        None,
+    )
+    if workspace_root is None:
+        return
+    env_path = workspace_root / "Config" / "ENV" / filename
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_workspace_env("bot.env")
 
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
@@ -41,16 +62,18 @@ nonebot.init(
 
 # ── OneBot V11 适配器配置 ──
 _ob = mon_config.section("onebot")
-if _ob.get("ws_urls"):
+_ws_urls = os.environ.get("MON_ONEBOT_WS_URLS", "").strip() or _ob.get("ws_urls", "")
+if _ws_urls:
     import json
     try:
-        ws_urls = json.loads(_ob["ws_urls"])
+        ws_urls = json.loads(_ws_urls)
     except (json.JSONDecodeError, ValueError):
-        ws_urls = [u.strip() for u in _ob["ws_urls"].split(",") if u.strip()]
+        ws_urls = [u.strip() for u in _ws_urls.split(",") if u.strip()]
     nonebot.get_driver().config.onebot_ws_urls = ws_urls
 
-if _ob.get("access_token"):
-    nonebot.get_driver().config.onebot_access_token = _ob["access_token"]
+_access_token = os.environ.get("MON_ONEBOT_ACCESS_TOKEN", "").strip() or _ob.get("access_token", "")
+if _access_token:
+    nonebot.get_driver().config.onebot_access_token = _access_token
 
 # ── 注册适配器 ──
 driver = nonebot.get_driver()
