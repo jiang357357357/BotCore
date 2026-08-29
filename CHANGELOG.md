@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-08-29
+
+### Changed
+
+- 同步 Eden `1.9.1` 产品版本，保持现有 OneBot 和 MonCore 调用契约不变。
+
+### Fixed
+
+- 补齐 BotCore 独立运行时已直接导入的 `websockets` 依赖，避免脱离父启动器环境时导入失败。
+
 ## [1.9.0] - 2026-08-27
 
 ### Changed

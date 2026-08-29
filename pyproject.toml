@@ -1,12 +1,13 @@
 [project]
 name = "BotCore"
-version = "1.9.0"
+version = "1.9.1"
 description = "BotCore"
 readme = "README.md"
 requires-python = ">=3.9, <4.0"
 dependencies = [
     "aiohttp>=3.8.0",
     "aiofiles>=23.0.0",
+    "websockets>=11.0.0",
 ]
 
 [tool.nonebot]
