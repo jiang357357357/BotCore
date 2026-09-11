@@ -25,7 +25,7 @@ driver = get_driver()
 mon_config = MonConfig()
 
 # 加载机器人配置
-config_path = os.path.join(os.path.dirname(__file__), "config", "config.json")
+config_path = os.getenv("MON_BOT_CONFIG_FILE") or os.path.join(os.path.dirname(__file__), "config", "config.json")
 bot_config = BotConfig.load_from_file(config_path)
 
 

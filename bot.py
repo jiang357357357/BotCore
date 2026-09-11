@@ -8,7 +8,12 @@ import sys
 import os
 from pathlib import Path
 
-_project_root = Path(__file__).parent
+_frozen = getattr(sys, "frozen", False)
+if _frozen:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+_project_root = Path(sys.executable).resolve().parent if _frozen else Path(__file__).parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
@@ -35,6 +40,19 @@ def _load_workspace_env(filename: str) -> None:
 
 _load_workspace_env("bot.env")
 
+if _frozen:
+    # Keep writable runtime data outside PyInstaller's bundled resources.
+    os.environ.setdefault("MON_LOG_ROOT", str(_project_root / "Data" / "Logs"))
+    os.environ.setdefault("MON_QQBOT_STATE_DIR", str(_project_root / "Data" / "qqbot"))
+    os.environ.setdefault("MON_BOT_CONFIG_FILE", str(_project_root / "Config" / "bot.json"))
+    env_path = _project_root / "Config" / "bot.env"
+    if env_path.is_file():
+        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip())
+
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 from src.System.MonConfig import MonConfig
@@ -45,7 +63,7 @@ mon_config = MonConfig()
 # ── NoneBot 框架配置 ──
 _nb = mon_config.section("nonebot")
 _debug = mon_config.section("debug")
-_hot_reload = _debug.get("hot_reload", "false").lower() in ("true", "1", "yes")
+_hot_reload = not _frozen and _debug.get("hot_reload", "false").lower() in ("true", "1", "yes")
 _driver = _nb.get("driver", "~aiohttp")
 print(f"[BOT] driver={_driver}, hot_reload={_hot_reload}")
 nonebot.init(
@@ -80,9 +98,18 @@ driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
 
 # ── 加载插件 ──
-nonebot.load_plugins("src/plugins")
+if _frozen:
+    # Import by module name: discovery by relative directory is source-only.
+    plugin = nonebot.load_plugin("src.plugins.BotCore")
+    if plugin is None:
+        raise RuntimeError("BotCore plugin failed to load")
+else:
+    nonebot.load_plugins("src/plugins")
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        print("EDEN_BOT_SELF_TEST_OK: OneBot adapter and BotCore plugin loaded")
+        sys.exit(0)
     if _hot_reload and "--no-reload" not in sys.argv:
         import subprocess
         from watchfiles import watch, DefaultFilter
