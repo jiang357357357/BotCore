@@ -8,6 +8,8 @@ import sys
 import os
 from pathlib import Path
 
+from runtime_paths import find_workspace_root, qqbot_state_dir
+
 _frozen = getattr(sys, "frozen", False)
 if _frozen:
     for stream in (sys.stdout, sys.stderr):
@@ -18,16 +20,13 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 os.chdir(str(_project_root))
+_workspace_root = find_workspace_root(_project_root)
 
 
 def _load_workspace_env(filename: str) -> None:
-    workspace_root = next(
-        (path for path in (_project_root, *_project_root.parents) if (path / ".monworkspace").is_file()),
-        None,
-    )
-    if workspace_root is None:
+    if _workspace_root is None:
         return
-    env_path = workspace_root / "Config" / "ENV" / filename
+    env_path = _workspace_root / "Config" / "ENV" / filename
     if not env_path.is_file():
         return
     for raw in env_path.read_text(encoding="utf-8").splitlines():
@@ -39,11 +38,11 @@ def _load_workspace_env(filename: str) -> None:
 
 
 _load_workspace_env("bot.env")
+os.environ.setdefault("MON_QQBOT_STATE_DIR", str(qqbot_state_dir(_project_root)))
 
 if _frozen:
     # Keep writable runtime data outside PyInstaller's bundled resources.
     os.environ.setdefault("MON_LOG_ROOT", str(_project_root / "Data" / "Logs"))
-    os.environ.setdefault("MON_QQBOT_STATE_DIR", str(_project_root / "Data" / "qqbot"))
     os.environ.setdefault("MON_BOT_CONFIG_FILE", str(_project_root / "Config" / "bot.json"))
     env_path = _project_root / "Config" / "bot.env"
     if env_path.is_file():

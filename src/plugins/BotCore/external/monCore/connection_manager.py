@@ -50,6 +50,8 @@ class ConnectionManager:
 
         self._connected_event = asyncio.Event()
         self._registered_event = asyncio.Event()
+        self._registration_finished_event = asyncio.Event()
+        self.registration_error: Optional[str] = None
         self._recovery_task: Optional[asyncio.Task] = None
 
         self.callback_handler = ConnectionCallbackHandler(self)
@@ -61,6 +63,15 @@ class ConnectionManager:
         self.credential_store.save_device_credential(credential)
         self.credential_store.clear_pairing_token()
         self.pairing_token = None
+
+    def reject_registration(self, reason: str) -> None:
+        """结束本轮注册等待并保留 MonCore 返回的明确失败原因。"""
+        self.registration_error = str(reason or "MonCore 拒绝注册")
+        self._registration_finished_event.set()
+
+    def finish_registration(self) -> None:
+        """通知注册请求已成功完成，避免继续等待到超时。"""
+        self._registration_finished_event.set()
     
     @property
     def is_connected(self) -> bool:
@@ -157,6 +168,10 @@ class ConnectionManager:
         if not self.ws_client or not self.ws_client.is_connected:
             logger.error("WebSocket 未连接，无法注册")
             return False
+
+        self.registration_error = None
+        self.is_registered = False
+        self._registration_finished_event.clear()
         
         # 获取 QQ 号
         qq_number = await self._get_qq_number()
@@ -269,6 +284,8 @@ class ConnectionManager:
             # 等待注册响应（最多等待 10 秒）
             # 注册响应会在 _handle_register_response 中处理
             await self._wait_for_registration()
+            if self.registration_error:
+                logger.error(f"MonCore 拒绝注册: {self.registration_error}")
             return self.is_registered
         
         return False
@@ -276,7 +293,7 @@ class ConnectionManager:
     async def _wait_for_registration(self):
         """等待注册完成（使用 asyncio.Event 替代忙等待轮询）"""
         try:
-            await asyncio.wait_for(self._registered_event.wait(), timeout=10.0)
+            await asyncio.wait_for(self._registration_finished_event.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             logger.warning("等待注册超时")
     

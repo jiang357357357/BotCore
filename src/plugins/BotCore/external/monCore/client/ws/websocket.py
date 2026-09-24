@@ -658,6 +658,8 @@ class WebSocketClient:
             error_message = data.get("message", "未知错误")
             error_code = data.get("code", "UNKNOWN")
             logger.error(f"收到错误响应: code={error_code}, message={error_message}")
+            if "error" in self.message_handlers:
+                await self.message_handlers["error"](message)
         
         # 处理其他消息（通过注册的 handler）
         elif command in self.message_handlers:

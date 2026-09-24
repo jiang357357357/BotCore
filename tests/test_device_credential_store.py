@@ -1,4 +1,5 @@
 import os
+import asyncio
 import importlib.util
 import json
 import stat
@@ -27,6 +28,18 @@ assert WEBSOCKET_SPEC and WEBSOCKET_SPEC.loader
 WEBSOCKET_SPEC.loader.exec_module(WEBSOCKET_MODULE)
 WebSocketClient = WEBSOCKET_MODULE.WebSocketClient
 
+CALLBACK_HANDLER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src/plugins/BotCore/external/monCore/client/ws/callback_handler.py"
+)
+CALLBACK_HANDLER_SPEC = importlib.util.spec_from_file_location(
+    "moncore_callback_handler", CALLBACK_HANDLER_PATH
+)
+CALLBACK_HANDLER_MODULE = importlib.util.module_from_spec(CALLBACK_HANDLER_SPEC)
+assert CALLBACK_HANDLER_SPEC and CALLBACK_HANDLER_SPEC.loader
+CALLBACK_HANDLER_SPEC.loader.exec_module(CALLBACK_HANDLER_MODULE)
+ConnectionCallbackHandler = CALLBACK_HANDLER_MODULE.ConnectionCallbackHandler
+
 
 class DeviceCredentialStoreTests(unittest.TestCase):
     def test_device_identity_is_stable_and_secret_is_private(self):
@@ -37,8 +50,9 @@ class DeviceCredentialStoreTests(unittest.TestCase):
 
             store.save_device_credential("credential-value")
             self.assertEqual(store.device_credential(), "credential-value")
-            mode = stat.S_IMODE(store.device_path.stat().st_mode)
-            self.assertEqual(mode, 0o600)
+            if os.name != "nt":
+                mode = stat.S_IMODE(store.device_path.stat().st_mode)
+                self.assertEqual(mode, 0o600)
 
     def test_pairing_token_prefers_environment_and_can_be_removed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -77,6 +91,78 @@ class WebSocketDeviceCredentialTests(unittest.IsolatedAsyncioTestCase):
             socket.payload["data"]["device_credential"],
             "credential-a",
         )
+
+
+class RegistrationFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registration_error_finishes_wait_immediately_with_server_reason(self):
+        class Manager:
+            def __init__(self):
+                self.registration_error = None
+                self.finished = asyncio.Event()
+                self.is_registered = False
+
+            def reject_registration(self, reason):
+                self.registration_error = reason
+                self.finished.set()
+
+        manager = Manager()
+        handler = ConnectionCallbackHandler(manager)
+
+        await handler.handle_register_response(
+            {
+                "command": "register",
+                "subCommand": "error",
+                "data": {"message": "首次注册需要绑定令牌，后续连接需要设备凭证"},
+            }
+        )
+
+        self.assertTrue(manager.finished.is_set())
+        self.assertFalse(manager.is_registered)
+        self.assertEqual(
+            manager.registration_error,
+            "首次注册需要绑定令牌，后续连接需要设备凭证",
+        )
+
+    async def test_success_marks_registered_and_finishes_wait(self):
+        class Socket:
+            async def disconnect(self):
+                return None
+
+        class Manager:
+            def __init__(self):
+                self.registration_error = None
+                self.finished = asyncio.Event()
+                self.is_registered = False
+                self.ws_client = Socket()
+
+            def accept_device_credential(self, credential):
+                self.credential = credential
+
+            async def _connect_bot_channel(self, bot_url):
+                self.bot_url = bot_url
+                return True
+
+            def finish_registration(self):
+                self.finished.set()
+
+        manager = Manager()
+        handler = ConnectionCallbackHandler(manager)
+
+        await handler.handle_register_response(
+            {
+                "command": "register",
+                "subCommand": "success",
+                "data": {
+                    "bot_id": "123456789",
+                    "bot_url": "ws://127.0.0.1:40011/ws/qq_devices/bot/123456789/",
+                    "device_credential": "credential-value",
+                },
+            }
+        )
+
+        self.assertTrue(manager.is_registered)
+        self.assertTrue(manager.finished.is_set())
+        self.assertEqual(manager.credential, "credential-value")
 
 
 if __name__ == "__main__":

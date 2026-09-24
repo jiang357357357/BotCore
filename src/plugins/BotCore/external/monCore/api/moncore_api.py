@@ -43,6 +43,7 @@ class MonCoreAPI:
     def register_ws_handlers(self):
         """注册 MonCore 下发消息处理器。重连替换 ws_client 后需要再次调用。"""
         self.ws_client.register_handler("reply", self._handle_reply)
+        self.ws_client.register_handler("error", self._handle_error)
         self.ws_client.register_handler("store", self._handle_store_response)
         self.ws_client.register_handler("favorability", self._handle_favorability_response)
         self.ws_client.register_handler("memory", self._handle_memory_response)
@@ -776,6 +777,28 @@ class MonCoreAPI:
                 
         except Exception as e:
             logger.error(f"处理回复消息时出错: {e}")
+
+    async def _handle_error(self, message: Dict[str, Any]):
+        """Resolve the matching request immediately when MonCore rejects it."""
+        data = message.get("data", {}) if isinstance(message.get("data"), dict) else {}
+        request_id = str(data.get("request_id") or "").strip()
+        if not request_id:
+            return
+
+        future = self.pending_requests.pop(request_id, None)
+        if not future:
+            logger.debug(f"错误响应没有匹配的待处理请求: request_id={request_id}")
+            return
+
+        if not future.done():
+            future.set_result(
+                {
+                    "content": str(data.get("user_message") or "").strip(),
+                    "audio_url": None,
+                    "error_code": str(data.get("code") or "UNKNOWN"),
+                    "error_message": str(data.get("message") or "未知错误"),
+                }
+            )
 
     async def _send_message_host_ack(self, sub_command: str, data: Dict[str, Any]):
         await self.ws_client.send(

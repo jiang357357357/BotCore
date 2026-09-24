@@ -98,17 +98,27 @@ class ConnectionCallbackHandler:
                     
                     if success:
                         self.connection_manager.is_registered = True
+                        self.connection_manager.finish_registration()
                         # 调用注册回调
                         await self._invoke_callbacks(self.on_registered_callbacks)
                     else:
-                        logger.error("连接专用通道失败")
+                        reason = "连接专用通道失败"
+                        logger.error(reason)
+                        self.connection_manager.reject_registration(reason)
                 else:
-                    logger.error("注册响应中缺少 bot_id 或 bot_url")
+                    reason = "注册响应中缺少 bot_id 或 bot_url"
+                    logger.error(reason)
+                    self.connection_manager.reject_registration(reason)
             else:
-                logger.error(f"注册失败: {sub_command}")
+                data = message.get("data")
+                reason = data.get("message") if isinstance(data, dict) else None
+                reason = str(reason or sub_command or "MonCore 拒绝注册")
+                logger.error(f"注册失败: {reason}")
+                self.connection_manager.reject_registration(reason)
                 
         except Exception as e:
             logger.error(f"处理注册响应时出错: {e}")
+            self.connection_manager.reject_registration(f"处理注册响应失败: {e}")
     
     async def handle_connected(self):
         """处理连接成功事件"""
