@@ -34,6 +34,7 @@ class MonCoreAPI:
         self.http_port = http_port
         self.http_host = http_host or "localhost"  # 默认使用 localhost
         self.pending_requests: Dict[str, asyncio.Future] = {}  # 等待响应的请求（key: request_id）
+        self.pending_chat_modes: Dict[str, asyncio.Future] = {}
         self.pending_store_requests: Dict[str, asyncio.Future] = {}  # 等待存储响应的请求（key: store_request_id）
         self.reply_callbacks: list[Callable] = []  # 回复回调函数列表
         
@@ -43,6 +44,7 @@ class MonCoreAPI:
     def register_ws_handlers(self):
         """注册 MonCore 下发消息处理器。重连替换 ws_client 后需要再次调用。"""
         self.ws_client.register_handler("reply", self._handle_reply)
+        self.ws_client.register_handler("chat", self._handle_chat_processing)
         self.ws_client.register_handler("error", self._handle_error)
         self.ws_client.register_handler("store", self._handle_store_response)
         self.ws_client.register_handler("favorability", self._handle_favorability_response)
@@ -454,6 +456,8 @@ class MonCoreAPI:
             # 使用 request_id 作为 key，支持并发请求
             future = asyncio.Future()
             self.pending_requests[request_id] = future
+            mode_future = asyncio.Future()
+            self.pending_chat_modes[request_id] = mode_future
             
             logger.debug(f"准备发送聊天请求: request_id={request_id}, qq_number={qq_number}, is_group={is_group}, need_voice={need_voice}, content={content[:50]}")
             
@@ -479,7 +483,12 @@ class MonCoreAPI:
             # 等待响应（带超时）
             # 后端返回的 reply 包含 request_id，用于精确匹配
             try:
-                reply_data = await asyncio.wait_for(future, timeout=timeout)
+                done, _ = await asyncio.wait({future, mode_future}, timeout=2.0, return_when=asyncio.FIRST_COMPLETED)
+                if future in done:
+                    reply_data = future.result()
+                else:
+                    agent_mode = mode_future in done and mode_future.result() == "agent"
+                    reply_data = await asyncio.wait_for(future, timeout=210.0 if agent_mode else timeout)
                 logger.info(f"收到回复: request_id={request_id}, qq_number={qq_number}, has_content={bool(reply_data.get('content'))}, has_audio={bool(reply_data.get('audio_url'))}")
                 return reply_data
             except asyncio.TimeoutError:
@@ -494,6 +503,9 @@ class MonCoreAPI:
             if request_id and request_id in self.pending_requests:
                 self.pending_requests.pop(request_id, None)
             return None
+        finally:
+            if request_id:
+                self.pending_chat_modes.pop(request_id, None)
     
     async def get_role_info(self, timeout: float = 10.0) -> Optional[str]:
         """
@@ -698,6 +710,16 @@ class MonCoreAPI:
         self.reply_callbacks.append(callback)
         logger.debug(f"已注册回复回调函数: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
     
+    async def _handle_chat_processing(self, message: Dict[str, Any]):
+        """Core 告知本轮走普通聊天还是 Agent，以便选用对应等待时间。"""
+        if message.get("subCommand") != "processing":
+            return
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        request_id = str(data.get("request_id") or "")
+        future = self.pending_chat_modes.get(request_id)
+        if future and not future.done():
+            future.set_result(str(data.get("mode") or "normal"))
+
     async def _handle_reply(self, message: Dict[str, Any]):
         """
         处理回复消息

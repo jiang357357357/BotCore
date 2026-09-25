@@ -25,7 +25,7 @@ BotCore/
 │
 ├── config/                     # Layer 2: 配置层
 │   ├── bot_config.py          # BotConfig 类定义
-│   └── config.json            # 配置文件
+│   └── config.json            # 首次启动时的旧配置迁移来源
 │
 ├── core/                       # 核心业务
 │   ├── router/                # Layer 3: 路由层
@@ -95,7 +95,7 @@ voice_mode_enabled: bool          # 语音模式开关
 
 **职责**：
 - 定义机器人配置结构（`BotConfig` 类）
-- 从 `config.json` 加载配置
+- 从 BotCore 根目录的 `Config/bot.json` 加载可写配置；首次启动时复制旧的 `config/config.json`
 - 支持序列化/反序列化
 
 **配置项**：

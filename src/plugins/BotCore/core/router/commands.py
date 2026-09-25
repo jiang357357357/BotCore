@@ -141,6 +141,28 @@ async def handle_rule(event: MessageEvent, args: Message = CommandArg()):
     await rule_cmd.finish(Message(rule_text))
 
 
+# ==================== /模式 命令 ====================
+
+mode_cmd = on_command("模式", block=True)
+
+@mode_cmd.handle()
+async def handle_mode(event: MessageEvent, args: Message = CommandArg()):
+    """由 Core 按 Bot 超级管理员规则管理私聊的回复模式。"""
+    if not isinstance(event, PrivateMessageEvent):
+        await mode_cmd.finish(Message("请在与机器人的私聊中使用 /模式。"))
+        return
+    if not await _ensure_command_backend_ready(event):
+        await mode_cmd.finish(Message("MonCore 当前不可用，暂时无法切换模式。"))
+        return
+    from ...app import get_moncore_api
+    api = get_moncore_api()
+    if not api:
+        await mode_cmd.finish(Message("MonCore API 未就绪。"))
+        return
+    result = await api.request_reply(event, timeout=15.0, need_voice=False)
+    await mode_cmd.finish(Message(str((result or {}).get("content") or "模式操作失败，请稍后再试。")))
+
+
 # ==================== /语音 命令 ====================
 
 voice_cmd = on_command("语音", block=True)

@@ -6,6 +6,7 @@ MonBot - NoneBot2 机器人主程序入口
 
 import sys
 import os
+import shutil
 from pathlib import Path
 
 from runtime_paths import find_workspace_root, qqbot_state_dir
@@ -40,10 +41,18 @@ def _load_workspace_env(filename: str) -> None:
 _load_workspace_env("bot.env")
 os.environ.setdefault("MON_QQBOT_STATE_DIR", str(qqbot_state_dir(_project_root)))
 
+if not os.environ.get("MON_BOT_CONFIG_FILE"):
+    # Keep writable settings outside src/, which is watched for code changes.
+    runtime_config = _project_root / "Config" / "bot.json"
+    legacy_config = _project_root / "src" / "plugins" / "BotCore" / "config" / "config.json"
+    if not _frozen and not runtime_config.exists() and legacy_config.is_file():
+        runtime_config.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(legacy_config, runtime_config)
+    os.environ["MON_BOT_CONFIG_FILE"] = str(runtime_config)
+
 if _frozen:
     # Keep writable runtime data outside PyInstaller's bundled resources.
     os.environ.setdefault("MON_LOG_ROOT", str(_project_root / "Data" / "Logs"))
-    os.environ.setdefault("MON_BOT_CONFIG_FILE", str(_project_root / "Config" / "bot.json"))
     env_path = _project_root / "Config" / "bot.env"
     if env_path.is_file():
         for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
