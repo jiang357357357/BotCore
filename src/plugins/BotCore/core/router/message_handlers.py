@@ -8,6 +8,7 @@ from nonebot.exception import FinishedException
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, Message, GroupMessageEvent, PrivateMessageEvent
 
 from ..business.message import PrivateMessageService, GroupMessageService
+from .local_policy import is_allowed_by_local_policy
 from src.System.Logs import get_logger
 
 # 从 app 导入全局单例，避免重复实例化
@@ -40,56 +41,6 @@ def _get_supported_groups():
     """延迟获取后端支持的群聊列表"""
     from ...app import get_supported_groups
     return get_supported_groups()
-
-
-def _is_allowed_by_local_policy(event: MessageEvent) -> bool:
-    """
-    本地许可/白黑名单过滤（在后端 supported_contacts/groups 过滤前执行）
-
-    规则：
-    - 群聊：
-      - group_default_permit=True：默认允许；若群号在 group_deny_list 则拒绝
-      - group_default_permit=False：默认拒绝；仅群号在 group_allow_list 才允许
-    - 私聊：
-      - private_default_permit=True：默认允许；若QQ号在 private_deny_list 则拒绝
-      - private_default_permit=False：默认拒绝；仅QQ号在 private_allow_list 才允许
-    """
-    try:
-        if isinstance(event, GroupMessageEvent):
-            group_id = str(event.group_id)
-
-            if group_id in (bot_config.group_deny_list or []):
-                logger.info(f"群聊 {group_id} 命中本地拒绝列表，跳过处理")
-                return False
-
-            if not bot_config.group_default_permit:
-                allowed = group_id in (bot_config.group_allow_list or [])
-                if not allowed:
-                    logger.info(f"群聊 {group_id} 未在本地认可列表中，跳过处理")
-                return allowed
-
-            return True
-
-        if isinstance(event, PrivateMessageEvent):
-            user_id = str(event.user_id)
-
-            if user_id in (bot_config.private_deny_list or []):
-                logger.info(f"私聊 {user_id} 命中本地拒绝列表，跳过处理")
-                return False
-
-            if not bot_config.private_default_permit:
-                allowed = user_id in (bot_config.private_allow_list or [])
-                if not allowed:
-                    logger.info(f"私聊 {user_id} 未在本地认可列表中，跳过处理")
-                return allowed
-
-            return True
-
-        logger.debug("未知消息类型，本地策略拒绝处理")
-        return False
-    except Exception as e:
-        logger.error(f"本地许可/白黑名单判断出错: {e}", exc_info=True)
-        return False
 
 
 def _is_supported_by_backend(event: MessageEvent) -> bool:
@@ -248,7 +199,7 @@ async def handle_message(bot: Bot, event: MessageEvent):
             logger.info(f"收到消息 - 私聊: 用户: {event.user_id}, 内容: {message_text[:50]}")
 
         # 本地许可/白黑名单过滤（先过滤，避免不必要的后端交互）
-        if not _is_allowed_by_local_policy(event):
+        if not is_allowed_by_local_policy(event):
             logger.debug("消息被本地策略过滤，跳过处理")
             return
 

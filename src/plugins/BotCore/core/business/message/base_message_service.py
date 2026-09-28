@@ -215,6 +215,18 @@ class BaseMessageService:
 
         content = reply_data.get("content", "")
         audio_url = reply_data.get("audio_url")
+        images_base64 = reply_data.get("images_base64")
+
+        if isinstance(images_base64, list) and images_base64:
+            try:
+                if not self.napcat_api:
+                    raise RuntimeError("NapCat API 未初始化")
+                await self.napcat_api.send_private_images(str(event.user_id), images_base64)
+                logger.info("已发送智能体图片回复: contact=%s pages=%s", event.user_id, len(images_base64))
+                return None
+            except Exception as error:
+                logger.warning("智能体图片发送失败，回退文字: contact=%s error=%s", event.user_id, error)
+                return await self._build_text_message(content, event)
 
         if get_voice_mode() and audio_url:
             return await self._try_send_voice_or_fallback(content, audio_url, context_label, event)

@@ -5,8 +5,11 @@ MonCore API 接口
 """
 
 import asyncio
+import base64
+import hashlib
 import time
 import random
+import secrets
 from typing import Optional, Dict, Any, Callable
 from nonebot.adapters.onebot.v11 import MessageEvent, GroupMessageEvent, PrivateMessageEvent
 
@@ -35,7 +38,10 @@ class MonCoreAPI:
         self.http_host = http_host or "localhost"  # 默认使用 localhost
         self.pending_requests: Dict[str, asyncio.Future] = {}  # 等待响应的请求（key: request_id）
         self.pending_chat_modes: Dict[str, asyncio.Future] = {}
+        self.pending_card_requests: Dict[str, asyncio.Future] = {}
+        self.pending_file_sends: Dict[str, Dict[str, Any]] = {}
         self.pending_store_requests: Dict[str, asyncio.Future] = {}  # 等待存储响应的请求（key: store_request_id）
+        self.chat_send_locks: Dict[str, asyncio.Lock] = {}
         self.reply_callbacks: list[Callable] = []  # 回复回调函数列表
         
         # 注册消息处理器
@@ -52,6 +58,41 @@ class MonCoreAPI:
         self.ws_client.register_handler("sendMessageHost", self._handle_send_message_host)
         self.ws_client.register_handler("historyHost", self._handle_history_host)
         self.ws_client.register_handler("sync_bot_info", self._handle_sync_bot_info)
+        self.ws_client.register_handler("renderCard", self._handle_render_card)
+
+    async def render_help_card(self, content: str, timeout: float = 8.0) -> list[str]:
+        """Ask the authenticated Core renderer for bounded help PNG pages."""
+        text = str(content or "").strip()
+        if not text or len(text) > 4000:
+            return []
+        request_id = secrets.token_hex(16)
+        future = asyncio.get_running_loop().create_future()
+        self.pending_card_requests[request_id] = future
+        try:
+            if not await self.ws_client.send({"command": "renderCard", "data": {
+                "request_id": request_id, "kind": "help", "content": text,
+            }}):
+                return []
+            return await asyncio.wait_for(future, timeout=timeout)
+        except Exception as error:
+            logger.warning("QQ 帮助卡片不可用，改用文字: %s", error)
+            return []
+        finally:
+            self.pending_card_requests.pop(request_id, None)
+
+    async def _handle_render_card(self, message: Dict[str, Any]):
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        request_id = str(data.get("request_id") or "")
+        future = self.pending_card_requests.get(request_id)
+        if not future or future.done():
+            return
+        pages = data.get("images_base64")
+        if message.get("subCommand") != "success" or not isinstance(pages, list) or not 1 <= len(pages) <= 8 or any(
+            not isinstance(page, str) or len(page) > 2_000_000 for page in pages
+        ):
+            future.set_result([])
+        else:
+            future.set_result(pages)
 
     async def _handle_sync_bot_info(self, message: Dict[str, Any]):
         """响应 Mon Web 手动刷新，立即从 NapCat 拉取好友和群聊。"""
@@ -186,6 +227,18 @@ class MonCoreAPI:
         return MonCoreAPI._extract_message_image_metadata(MonCoreAPI._get_event_message(event))
 
     @staticmethod
+    def _extract_file_metadata(message) -> list[Dict[str, Any]]:
+        files = []
+        for segment in message:
+            if segment.type != "file":
+                continue
+            data = dict(getattr(segment, "data", {}) or {})
+            files.append({"file_id": str(data.get("file_id") or ""),
+                          "filename": str(data.get("file") or ""),
+                          "file_size": data.get("file_size")})
+        return files
+
+    @staticmethod
     def _extract_message_content_for_metadata(message) -> str:
         content_parts = []
         image_index = 0
@@ -264,6 +317,7 @@ class MonCoreAPI:
     async def _build_event_metadata(event: MessageEvent, content: str) -> Dict[str, Any]:
         """构建消息元数据，用于 MonCore 保留群内真实发送者。"""
         is_group = isinstance(event, GroupMessageEvent)
+        message = MonCoreAPI._get_event_message(event)
         sender = getattr(event, "sender", None)
         sender_nickname = getattr(sender, "card", None) or getattr(sender, "nickname", None) or ""
         sender_user_id = str(getattr(event, "user_id", "") or "")
@@ -277,12 +331,19 @@ class MonCoreAPI:
             "display_name": f"{display_name}({sender_user_id})" if sender_user_id and sender_nickname else display_name,
             "is_group": is_group,
             "raw_content": content,
+            "has_text": any(segment.type == "text" and str(segment.data.get("text") or "").strip()
+                            for segment in message),
+            "has_non_text": any(segment.type not in {"text", "reply"} for segment in message),
+            "segment_types": sorted({segment.type for segment in message if segment.type != "reply"}),
             "to_me": bool(event.is_tome()) if hasattr(event, "is_tome") else False,
             "mentions": await MonCoreAPI._extract_mentions(event),
         }
         images = MonCoreAPI._extract_image_metadata(event)
         if images:
             metadata["images"] = images
+        files = MonCoreAPI._extract_file_metadata(message)
+        if files:
+            metadata["files"] = files
         reply_to = MonCoreAPI._extract_reply_metadata(event)
         if reply_to:
             metadata["reply_to"] = reply_to
@@ -404,7 +465,7 @@ class MonCoreAPI:
                 "content": "用户消息内容",
                 "is_group": false,
                 "qq_number": "123456789",
-                "request_id": "1234567890123_0_123456789",
+                "request_id": "1234567890123_0_123456789_a1b2c3d4",
                 "need_voice": true  // 可选，是否需要语音回复
             }
         }
@@ -429,6 +490,8 @@ class MonCoreAPI:
             如果超时或失败则返回 None
         """
         request_id = None
+        send_lock = None
+        owns_send_lock = False
         try:
             # 判断消息类型
             is_group = isinstance(event, GroupMessageEvent)
@@ -437,6 +500,10 @@ class MonCoreAPI:
             
             content = await self._extract_event_content(event)
             metadata = await self._build_event_metadata(event, content)
+            send_lock = self.chat_send_locks.setdefault(
+                f"{'group' if is_group else 'private'}:{qq_number}", asyncio.Lock())
+            await send_lock.acquire()
+            owns_send_lock = True
             
             # 如果 need_voice 未指定，根据当前语音模式状态决定
             if need_voice is None:
@@ -447,10 +514,56 @@ class MonCoreAPI:
                     logger.debug(f"获取语音模式状态失败，默认不请求语音: {e}")
                     need_voice = False
             
-            # 生成唯一的 request_id：时间戳（毫秒）+ is_group + qq_number
+            # 同一联系人在同一毫秒内也可能连续发消息，随机后缀避免覆盖等待中的 Future。
             timestamp_ms = int(time.time() * 1000)
             is_group_flag = 1 if is_group else 0
-            request_id = f"{timestamp_ms}_{is_group_flag}_{qq_number}"
+            request_id = f"{timestamp_ms}_{is_group_flag}_{qq_number}_{secrets.token_hex(4)}"
+
+            if not is_group and (metadata.get("files") or metadata.get("images")):
+                try:
+                    files = metadata.get("files") or []
+                    images = metadata.get("images") or []
+                    if len(files) + len(images) > 4:
+                        raise ValueError("一次最多发送 4 个文件或图片")
+                    from src.plugins.BotCore.app import napcat_api
+                    if not napcat_api:
+                        raise RuntimeError("NapCat 未连接")
+                    uploaded = []
+                    for kind, index, item in [*(('file', index, item) for index, item in enumerate(files, 1)),
+                                              *(('image', index, item) for index, item in enumerate(images, 1))]:
+                        size = int(item.get("file_size") or 0)
+                        if kind == "file":
+                            filename = str(item.get("filename") or "")
+                            file_id = str(item.get("file_id") or "")
+                            if not filename or not file_id or size < 0 or size > 8 * 1024 * 1024:
+                                raise ValueError("文件信息无效或单文件超过 8 MiB")
+                            blob = await napcat_api.read_private_file(file_id, size)
+                        else:
+                            image_file = str(item.get("file") or "")
+                            if not image_file or size < 0 or size > 8 * 1024 * 1024:
+                                raise ValueError("图片信息无效或单张图片超过 8 MiB")
+                            blob, extension = await napcat_api.read_private_image(image_file, size)
+                            filename = f"qq-image-{index}.{extension}"
+                        upload_id = secrets.token_hex(16)
+                        sha256 = hashlib.sha256(blob).hexdigest()
+                        head = {"command": "fileUpload", "data": {"phase": "start", "upload_id": upload_id,
+                                "request_id": request_id, "qq_number": qq_number,
+                                "message_id": metadata.get("onebot_message_id"),
+                                "filename": filename, "size": len(blob), "sha256": sha256}}
+                        if not await self.ws_client.send(head):
+                            raise RuntimeError("QQ 文件上传通道已断开")
+                        for offset in range(0, len(blob), 96 * 1024):
+                            chunk = base64.b64encode(blob[offset:offset + 96 * 1024]).decode("ascii")
+                            if not await self.ws_client.send({"command": "fileUpload", "data": {
+                                    "phase": "chunk", "upload_id": upload_id, "content_base64": chunk}}):
+                                raise RuntimeError("QQ 文件上传中断")
+                        if not await self.ws_client.send({"command": "fileUpload", "data": {
+                                "phase": "finish", "upload_id": upload_id}}):
+                            raise RuntimeError("QQ 文件上传中断")
+                        uploaded.append(upload_id)
+                    metadata["file_upload_ids"] = uploaded
+                except Exception as error:
+                    metadata["file_upload_error"] = str(error)[:180]
             
             # 创建等待响应的 Future
             # 使用 request_id 作为 key，支持并发请求
@@ -470,6 +583,10 @@ class MonCoreAPI:
                 need_voice=need_voice,
                 metadata=metadata,
             )
+            # A media-only message must finish staging before this contact sends the next message.
+            if not (metadata.get("files") or metadata.get("images")) or metadata.get("has_text") or is_group:
+                send_lock.release()
+                owns_send_lock = False
             
             if not success:
                 # 发送失败，清理 Future
@@ -483,12 +600,12 @@ class MonCoreAPI:
             # 等待响应（带超时）
             # 后端返回的 reply 包含 request_id，用于精确匹配
             try:
-                done, _ = await asyncio.wait({future, mode_future}, timeout=2.0, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait({future, mode_future}, timeout=10.0, return_when=asyncio.FIRST_COMPLETED)
                 if future in done:
                     reply_data = future.result()
                 else:
                     agent_mode = mode_future in done and mode_future.result() == "agent"
-                    reply_data = await asyncio.wait_for(future, timeout=210.0 if agent_mode else timeout)
+                    reply_data = await asyncio.wait_for(future, timeout=1830.0 if agent_mode else timeout)
                 logger.info(f"收到回复: request_id={request_id}, qq_number={qq_number}, has_content={bool(reply_data.get('content'))}, has_audio={bool(reply_data.get('audio_url'))}")
                 return reply_data
             except asyncio.TimeoutError:
@@ -504,6 +621,8 @@ class MonCoreAPI:
                 self.pending_requests.pop(request_id, None)
             return None
         finally:
+            if owns_send_lock and send_lock is not None:
+                send_lock.release()
             if request_id:
                 self.pending_chat_modes.pop(request_id, None)
     
@@ -750,6 +869,11 @@ class MonCoreAPI:
             content = data.get("content")  # 文本回复（必需）
             request_id = data.get("request_id")  # 请求ID（可选，用于并发匹配）
             audio_url = data.get("audio_url")  # 可选的音频URL（相对路径或完整URL）
+            images_base64 = data.get("images_base64")
+            if not isinstance(images_base64, list) or len(images_base64) > 8 or any(
+                not isinstance(item, str) or len(item) > 2_000_000 for item in images_base64
+            ):
+                images_base64 = []
             
             if not content:
                 logger.warning("收到回复但缺少 content")
@@ -771,7 +895,8 @@ class MonCoreAPI:
             # 构造回复数据
             reply_data = {
                 "content": content,
-                "audio_url": audio_url  # 可能为 None 或完整URL
+                "audio_url": audio_url,  # 可能为 None 或完整URL
+                "images_base64": images_base64,
             }
             
             # 如果提供了 request_id，使用 request_id 精确匹配
@@ -789,8 +914,10 @@ class MonCoreAPI:
                         f"待处理请求数={len(self.pending_requests)}, "
                         f"待处理请求keys={list(self.pending_requests.keys())[:5]}..."  # 只显示前5个
                     )
+                    # 带请求 ID 的回复只能交给原请求；超时后的迟到回复不能进入主动发送回调。
+                    return
             
-            # 如果没有 request_id 或找不到匹配的请求，调用所有注册的回调函数（用于推送的回复）
+            # 只有无请求 ID 的旧式主动回复才进入通用回调。
             for callback in self.reply_callbacks:
                 try:
                     await callback(reply_data)
@@ -867,16 +994,32 @@ class MonCoreAPI:
         target_type = str(data.get("target_type") or "")
         target_qq_number = str(data.get("target_qq_number") or "")
         content = str(data.get("content") or "")
+        images = data.get("images_base64")
+        if data.get("file_phase") is not None:
+            await self._handle_file_send(data)
+            return
         try:
             from src.plugins.BotCore.app import napcat_api
 
             if not napcat_api:
                 raise RuntimeError("NapCat API 未初始化")
-            result = await napcat_api.send_text_message(
-                target_type=target_type,
-                target_id=target_qq_number,
-                content=content,
-            )
+            if images is not None:
+                if target_type != "user" or not isinstance(images, list) or not 1 <= len(images) <= 8:
+                    raise ValueError("主动 QQ 图片只支持 1 至 8 张私聊卡片")
+                try:
+                    result = await napcat_api.send_private_images(target_qq_number, images)
+                    if not result.get("message_id"):
+                        raise RuntimeError("QQ 图片发送后未返回消息 ID")
+                    result["api"] = "send_private_msg"
+                except Exception as image_error:
+                    logger.warning("主动 QQ 卡片发送失败，改发文字: request_id=%s error=%s", request_id, image_error)
+                    result = await napcat_api.send_text_message(
+                        target_type=target_type, target_id=target_qq_number, content=content,
+                    )
+            else:
+                result = await napcat_api.send_text_message(
+                    target_type=target_type, target_id=target_qq_number, content=content,
+                )
             payload = {
                 "request_id": request_id,
                 "target_type": target_type,
@@ -902,6 +1045,66 @@ class MonCoreAPI:
                     "status": "failed",
                 },
             )
+
+    async def _handle_file_send(self, data: Dict[str, Any]):
+        request_id = str(data.get("request_id") or "")
+        phase = data.get("file_phase")
+        target = str(data.get("target_qq_number") or "")
+        if not request_id.startswith("qq_file_") or not target.isdigit() or data.get("target_type") != "user":
+            return
+        if phase == "start":
+            self.pending_file_sends = {key: item for key, item in self.pending_file_sends.items()
+                                       if time.monotonic() - item["created"] <= 120}
+            filename = str(data.get("filename") or "")
+            size = data.get("size")
+            if (not isinstance(size, int) or size < 0 or size > 8 * 1024 * 1024 or
+                    not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n") or
+                    len(self.pending_file_sends) >= 4 or request_id in self.pending_file_sends):
+                return
+            self.pending_file_sends[request_id] = {"target": target, "filename": filename,
+                "size": size, "sha256": str(data.get("sha256") or ""),
+                "length": 0, "chunks": [], "created": time.monotonic()}
+            return
+        item = self.pending_file_sends.get(request_id)
+        if phase == "chunk":
+            if not item or item["target"] != target or time.monotonic() - item["created"] > 120:
+                self.pending_file_sends.pop(request_id, None)
+                return
+            encoded = data.get("content_base64")
+            try:
+                if not isinstance(encoded, str) or len(encoded) > 131072:
+                    raise ValueError("QQ 文件分块无效")
+                chunk = base64.b64decode(encoded, validate=True)
+            except ValueError:
+                self.pending_file_sends.pop(request_id, None)
+                return
+            item["length"] += len(chunk)
+            if item["length"] > item["size"]:
+                self.pending_file_sends.pop(request_id, None)
+                return
+            item["chunks"].append(chunk)
+            return
+        if phase != "finish":
+            return
+        item = self.pending_file_sends.pop(request_id, None)
+        try:
+            if not item or item["target"] != target:
+                raise RuntimeError("QQ 文件传输不完整")
+            content = b"".join(item["chunks"])
+            if len(content) != item["size"] or hashlib.sha256(content).hexdigest() != item["sha256"]:
+                raise RuntimeError("QQ 文件完整性校验失败")
+            from src.plugins.BotCore.app import napcat_api
+            if not napcat_api:
+                raise RuntimeError("NapCat 未连接")
+            result = await napcat_api.send_private_file(target, item["filename"], content)
+            await self._send_message_host_ack("success", {"request_id": request_id,
+                "target_type": "user", "target_qq_number": target, "status": "sent",
+                "api": "upload_private_file", "file_id": result.get("file_id") or ""})
+        except Exception as error:
+            logger.error("QQ 文件发送失败: request_id=%s error=%s", request_id, error)
+            await self._send_message_host_ack("error", {"request_id": request_id,
+                "target_type": "user", "target_qq_number": target,
+                "status": "failed", "message": str(error)[:180]})
     
     async def _handle_store_response(self, message: Dict[str, Any]):
         """

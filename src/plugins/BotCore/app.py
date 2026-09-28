@@ -165,6 +165,10 @@ _last_moncore_reconnect_attempt = 0.0
 _MONCORE_RECONNECT_COOLDOWN = 10.0
 _bot_info_sync_task: Optional[asyncio.Task] = None
 _BOT_INFO_SYNC_INTERVAL = float(os.getenv("MONBOT_INFO_SYNC_INTERVAL", "300"))
+_bot_status_sync_task: Optional[asyncio.Task] = None
+_last_reported_napcat_status: Optional[bool] = None
+_bot_status_failures = 0
+_BOT_STATUS_SYNC_INTERVAL = 30.0
 
 
 def is_moncore_ready() -> bool:
@@ -247,7 +251,9 @@ async def _on_registered_callback():
     else:
         logger.warning("WebSocket 客户端未就绪，MonCoreAPI 初始化延迟")
     _ensure_bot_info_sync_task()
+    _ensure_bot_status_sync_task()
     asyncio.create_task(sync_bot_info_once("registered"))
+    asyncio.create_task(sync_bot_status_once(force=True))
 
 
 connection_manager.register_on_registered(_on_registered_callback)
@@ -255,6 +261,9 @@ connection_manager.register_on_registered(_on_registered_callback)
 
 async def sync_bot_info_once(reason: str = "manual") -> bool:
     """从 NapCat 拉取机器人资料、好友和群聊并上报 MonCore。"""
+    if _last_reported_napcat_status is False:
+        logger.debug(f"跳过 Bot 信息同步，QQ 账号离线: {reason}")
+        return False
     if not is_moncore_ready():
         logger.debug(f"跳过 Bot 信息同步，MonCore 未就绪: {reason}")
         return False
@@ -336,6 +345,56 @@ def _ensure_bot_info_sync_task():
     _bot_info_sync_task = asyncio.create_task(_bot_info_sync_loop())
     logger.info(f"Bot 信息定时同步已启动: interval={max(30.0, _BOT_INFO_SYNC_INTERVAL):.0f}s")
 
+
+async def sync_bot_status_once(*, force: bool = False) -> bool:
+    """以 OneBot get_status 为准同步 QQ 登录态，避免把进程存活当作在线。"""
+    global _last_reported_napcat_status, _bot_status_failures
+    if not is_moncore_ready() or not napcat_api.bot:
+        return False
+    try:
+        online = await asyncio.wait_for(napcat_api.get_online_status(), timeout=5.0)
+    except Exception as exc:
+        logger.warning(f"NapCat QQ 登录态查询失败: {exc}")
+        online = None
+    if online is None:
+        _bot_status_failures += 1
+        if _bot_status_failures < 3:
+            logger.warning(f"NapCat QQ 登录态暂不可确认: {_bot_status_failures}/3")
+            return False
+        online = False
+    else:
+        _bot_status_failures = 0
+    if not force and online == _last_reported_napcat_status:
+        return True
+    ws_client = connection_manager.get_ws_client()
+    if ws_client and await ws_client.send_bot_status(online):
+        was_offline = _last_reported_napcat_status is False
+        _last_reported_napcat_status = online
+        logger.info(f"已同步 NapCat QQ 登录态: {'在线' if online else '离线'}")
+        if online and was_offline:
+            asyncio.create_task(sync_bot_info_once("qq_reconnected"))
+        return True
+    return False
+
+
+async def _bot_status_sync_loop():
+    while True:
+        try:
+            await asyncio.sleep(_BOT_STATUS_SYNC_INTERVAL)
+            await sync_bot_status_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"Bot QQ 登录态定时同步失败: {exc}", exc_info=True)
+
+
+def _ensure_bot_status_sync_task():
+    global _bot_status_sync_task
+    if _bot_status_sync_task and not _bot_status_sync_task.done():
+        return
+    _bot_status_sync_task = asyncio.create_task(_bot_status_sync_loop())
+    logger.info(f"Bot QQ 登录态定时同步已启动: interval={_BOT_STATUS_SYNC_INTERVAL:.0f}s")
+
 from .core.router import commands  # noqa: E402
 from .core.router import message_handlers  # noqa: E402
 
@@ -365,13 +424,29 @@ async def on_bot_connect(bot: Bot):
         logger.info("MonCore 已连接，跳过重复连接")
 
 
+@get_driver().on_bot_disconnect
+async def on_bot_disconnect(bot: Bot):
+    """OneBot 连接断开时立即撤销 QQ 在线状态。"""
+    global _last_reported_napcat_status
+    if str(bot.self_id) != str(connection_manager.qq_number):
+        return
+    napcat_api.bot = None
+    ws_client = connection_manager.get_ws_client()
+    if is_moncore_ready() and ws_client and await ws_client.send_bot_status(False):
+        _last_reported_napcat_status = False
+    logger.warning(f"Bot 已断开: {bot.self_id}")
+
+
 @get_driver().on_shutdown
 async def shutdown_disconnect_moncore():
     """关闭时断开 MonCore 连接"""
-    global _bot_info_sync_task
+    global _bot_info_sync_task, _bot_status_sync_task
     if _bot_info_sync_task and not _bot_info_sync_task.done():
         _bot_info_sync_task.cancel()
         _bot_info_sync_task = None
+    if _bot_status_sync_task and not _bot_status_sync_task.done():
+        _bot_status_sync_task.cancel()
+        _bot_status_sync_task = None
     logger.info("正在断开 MonCore 连接...")
     await connection_manager.stop()
     logger.info("MonCore 连接已断开")

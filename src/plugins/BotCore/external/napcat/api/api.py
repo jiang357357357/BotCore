@@ -3,6 +3,10 @@ NapCat API 接口
 通过 NoneBot2 的 OneBot V11 Bot 实例与 NapCat 交互
 """
 
+import base64
+import hashlib
+import os
+from pathlib import Path
 import time
 from typing import Optional, Dict, Any, List
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
@@ -24,6 +28,14 @@ class NapCatAPI:
         """设置机器人实例"""
         self.bot = bot
         logger.info("NapCat API 机器人实例已设置")
+
+    async def get_online_status(self) -> Optional[bool]:
+        """读取 OneBot 报告的 QQ 登录态；查询失败时不猜测状态。"""
+        if not self.bot:
+            return None
+        result = await self.bot.call_api("get_status")
+        online = self._read_mapping_or_attr(result, "online", None)
+        return online if isinstance(online, bool) else None
 
     async def send_text_message(self, target_type: str, target_id: str, content: str) -> Dict[str, Any]:
         """向 QQ 好友或群聊发送纯文本消息。"""
@@ -56,6 +68,87 @@ class NapCatAPI:
             "message_id": str(message_id or ""),
             "api": api_name,
         }
+
+    async def send_private_images(self, user_id: str, images_base64: List[str]) -> Dict[str, Any]:
+        """Send locally rendered PNG pages to one private QQ contact."""
+        if not self.bot:
+            raise RuntimeError("机器人实例未设置")
+        if not str(user_id).isdigit() or not 1 <= len(images_base64) <= 8:
+            raise ValueError("QQ 图片目标或页数无效")
+        message = Message()
+        for encoded in images_base64:
+            if not isinstance(encoded, str) or len(encoded) > 2_000_000:
+                raise ValueError("QQ 图片大小无效")
+            binary = base64.b64decode(encoded, validate=True)
+            if len(binary) > 1_500_000 or not binary.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("QQ 图片必须是受限 PNG")
+            message += MessageSegment.image(f"base64://{encoded}")
+        result = await self.bot.call_api("send_private_msg", user_id=int(user_id), message=message)
+        return {"message_id": str(self._read_mapping_or_attr(result, "message_id", "") or "")}
+
+    async def read_private_file(self, file_id: str, expected_size: int) -> bytes:
+        """Fetch a received QQ file from NapCat's local cache with a strict size bound."""
+        if not self.bot or not file_id or expected_size < 0 or expected_size > 8 * 1024 * 1024:
+            raise ValueError("QQ 文件不可用或超过 8 MiB")
+        result = await self.bot.call_api("get_file", file_id=file_id)
+        location = self._read_mapping_or_attr(result, "file", "")
+        if not isinstance(location, str) or not location:
+            raise RuntimeError("NapCat 未返回文件路径")
+        path = Path(location)
+        stat = path.lstat()
+        if not path.is_file() or path.is_symlink() or stat.st_size > 8 * 1024 * 1024:
+            raise ValueError("QQ 文件不是受限的普通文件")
+        with path.open("rb") as source:
+            data = source.read(8 * 1024 * 1024 + 1)
+        if len(data) > 8 * 1024 * 1024 or len(data) != expected_size:
+            raise ValueError("QQ 文件大小与消息记录不符")
+        return data
+
+    async def read_private_image(self, image_file: str, expected_size: int = 0) -> tuple[bytes, str]:
+        """Resolve a received image through NapCat and read its bounded local cache copy."""
+        if not self.bot or not image_file or expected_size < 0 or expected_size > 8 * 1024 * 1024:
+            raise ValueError("QQ 图片不可用或超过 8 MiB")
+        result = await self.bot.call_api("get_image", file=image_file)
+        location = self._read_mapping_or_attr(result, "file", "")
+        if not isinstance(location, str) or not location:
+            raise RuntimeError("NapCat 未返回图片路径")
+        path = Path(location)
+        stat = path.lstat()
+        if not path.is_file() or path.is_symlink() or stat.st_size > 8 * 1024 * 1024:
+            raise ValueError("QQ 图片不是受限的普通文件")
+        with path.open("rb") as source:
+            data = source.read(8 * 1024 * 1024 + 1)
+        if len(data) > 8 * 1024 * 1024 or (expected_size and len(data) != expected_size):
+            raise ValueError("QQ 图片大小与消息记录不符")
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            extension = "png"
+        elif data.startswith(b"\xff\xd8\xff"):
+            extension = "jpg"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            extension = "gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            extension = "webp"
+        else:
+            raise ValueError("暂不支持这张图片的格式")
+        return data, extension
+
+    async def send_private_file(self, user_id: str, filename: str, content: bytes) -> Dict[str, Any]:
+        """Upload a bounded local file through NapCat's file API."""
+        if not self.bot or not str(user_id).isdigit() or len(content) > 8 * 1024 * 1024:
+            raise ValueError("QQ 文件目标或大小无效")
+        if not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n"):
+            raise ValueError("QQ 文件名无效")
+        import tempfile
+        with tempfile.NamedTemporaryFile(prefix="mon-qq-file-", delete=False) as temp:
+            os.chmod(temp.name, 0o600)
+            temp.write(content)
+            local_path = temp.name
+        try:
+            result = await self.bot.call_api("upload_private_file", user_id=str(user_id), file=local_path, name=filename)
+            return {"file_id": str(self._read_mapping_or_attr(result, "file_id", "") or ""),
+                    "sha256": hashlib.sha256(content).hexdigest()}
+        finally:
+            os.unlink(local_path)
 
     async def get_message_history(
         self,

@@ -70,7 +70,7 @@ class WebSocketClient:
         """
         try:
             logger.info(f"正在连接到 WebSocket 服务器: {self.server_url}")
-            self.websocket = await connect(self.server_url)
+            self.websocket = await connect(self.server_url, max_size=8 * 1024 * 1024)
             self.is_connected = True
             logger.info("WebSocket 连接成功")
             
@@ -420,6 +420,10 @@ class WebSocketClient:
             f"groups={len(groups) if groups is not None else 'skip'}"
         )
         return await self.send(message)
+
+    async def send_bot_status(self, online: bool) -> bool:
+        """上报 QQ 账号登录态，区别于 BotCore WebSocket 的连接态。"""
+        return await self.send({"command": "bot_status", "data": {"online": online}})
     
     async def send_mapping_update_confirm(self) -> bool:
         """
