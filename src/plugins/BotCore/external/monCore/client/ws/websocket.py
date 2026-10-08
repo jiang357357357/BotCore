@@ -31,6 +31,7 @@ class WebSocketClient:
         self._registered_event = asyncio.Event()
         self.bot_id: Optional[str] = None
         self.bot_url: Optional[str] = None
+        self.qq_command_protocol = 0
         self.message_handlers: Dict[str, Callable] = {}
         self.reconnect_interval = 5
         self.reconnect_task: Optional[asyncio.Task] = None
@@ -70,6 +71,7 @@ class WebSocketClient:
         """
         try:
             logger.info(f"正在连接到 WebSocket 服务器: {self.server_url}")
+            self.qq_command_protocol = 0
             self.websocket = await connect(self.server_url, max_size=8 * 1024 * 1024)
             self.is_connected = True
             logger.info("WebSocket 连接成功")
@@ -82,6 +84,7 @@ class WebSocketClient:
         except Exception as e:
             logger.error(f"WebSocket 连接失败: {e}")
             self.is_connected = False
+            self.qq_command_protocol = 0
             return False
     
     async def disconnect(self, disable_reconnect: bool = False):
@@ -98,6 +101,7 @@ class WebSocketClient:
             if self.websocket:
                 await self.websocket.close()
             self.is_connected = False
+            self.qq_command_protocol = 0
             if disable_reconnect:
                 self.is_registered = False
             logger.info("WebSocket 连接已断开")
@@ -208,7 +212,7 @@ class WebSocketClient:
             logger.error(f"注册机器人失败: {e}")
             return False
     
-    async def send(self, message: Dict[str, Any]) -> bool:
+    async def send(self, message: Dict[str, Any], *, raise_on_error: bool = False) -> bool:
         """
         发送消息
         
@@ -232,6 +236,8 @@ class WebSocketClient:
         except Exception as e:
             logger.error(f"发送消息失败: {e}")
             await self._handle_send_disconnected("发送消息失败后标记断开")
+            if raise_on_error:
+                raise ConnectionError("WebSocket frame delivery is unconfirmed") from e
             return False
 
     async def _handle_send_disconnected(self, reason: str):
@@ -587,6 +593,7 @@ class WebSocketClient:
             sub_command = message.get("subCommand")
             if sub_command == "confirm":
                 data = message.get("data", {})
+                self.qq_command_protocol = 1 if data.get("command_protocol") == 1 else 0
                 contacts = data.get("contacts", [])
                 groups = data.get("groups", [])
                 keywords = data.get("keywords", [])
@@ -641,13 +648,12 @@ class WebSocketClient:
                 else:
                     logger.warning(f"消息存储失败（未注册处理器）: {message}")
         
-        # 处理聊天处理确认（processing 状态，只记录日志）
+        # 分发模式确认，让请求方按智能体任务的等待时限保留最终回复。
         elif command == "chat":
-            sub_command = message.get("subCommand")
-            if sub_command == "processing":
-                logger.debug("聊天请求已接收，正在处理中...")
+            if "chat" in self.message_handlers:
+                await self.message_handlers["chat"](message)
             else:
-                logger.debug(f"收到聊天响应: {sub_command}")
+                logger.debug(f"收到聊天响应（未注册处理器）: {message.get('subCommand')}")
         
         # 处理回复消息（需要 request_id 匹配）
         elif command == "reply":

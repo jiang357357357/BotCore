@@ -8,7 +8,7 @@ from nonebot.exception import FinishedException
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent, Message, GroupMessageEvent, PrivateMessageEvent
 
 from ..business.message import PrivateMessageService, GroupMessageService
-from .local_policy import is_allowed_by_local_policy
+from .backend_policy import is_allowed_by_backend
 from src.System.Logs import get_logger
 
 # 从 app 导入全局单例，避免重复实例化
@@ -31,101 +31,10 @@ async def _finish_reply(bot: Bot, event: MessageEvent, reply: Message, reason: s
     await message_matcher.finish(reply)
 
 
-def _get_supported_contacts():
-    """延迟获取后端支持的联系人列表"""
-    from ...app import get_supported_contacts
-    return get_supported_contacts()
-
-
-def _get_supported_groups():
-    """延迟获取后端支持的群聊列表"""
-    from ...app import get_supported_groups
-    return get_supported_groups()
-
-
-def _is_supported_by_backend(event: MessageEvent) -> bool:
-    """
-    检查消息是否在后端支持的列表中
-
-    超级管理员不受此限制，直接放行。
-    """
-    try:
-        # 超级管理员直接放行
-        try:
-            from nonebot import get_driver
-            superusers = get_driver().config.superusers
-            user_id_str = str(event.user_id)
-            logger.debug(f"超级管理员检查: user_id={user_id_str}, superusers={superusers}, in={user_id_str in superusers}")
-            if user_id_str in superusers:
-                return True
-        except Exception as e:
-            logger.warning(f"超级管理员检查失败: {e}")
-        if isinstance(event, GroupMessageEvent):
-            # 群聊消息：群号或发言人 QQ 任一在后端支持列表中即可放行
-            group_id = str(event.group_id)
-            user_id = str(event.user_id)
-            supported_groups = _get_supported_groups()
-            supported_contacts = _get_supported_contacts()
-
-            group_supported = group_id in supported_groups
-            user_supported = user_id in supported_contacts
-            is_supported = group_supported or user_supported
-            if not is_supported:
-                logger.info(
-                    f"群聊 {group_id} 与发言人 {user_id} 均不在后端支持列表中"
-                    f"（groups={supported_groups}, contacts={supported_contacts}），跳过处理"
-                )
-            elif group_supported and user_supported:
-                logger.debug(f"群聊 {group_id} 与发言人 {user_id} 均在后端支持列表中，允许处理")
-            elif group_supported:
-                logger.debug(f"群聊 {group_id} 在后端支持群列表中，允许处理")
-            else:
-                logger.debug(f"发言人 {user_id} 在后端支持联系人列表中，允许处理群聊 {group_id}")
-            return is_supported
-            
-        elif isinstance(event, PrivateMessageEvent):
-            # 私聊消息：检查发送者QQ号是否在支持的联系人列表中
-            user_id = str(event.user_id)
-            supported_contacts = _get_supported_contacts()
-            
-            # 检查用户ID是否在支持列表中
-            is_supported = user_id in supported_contacts
-            if not is_supported:
-                logger.info(f"联系人 {user_id} 不在后端支持的列表中（当前支持列表: {supported_contacts}），跳过处理")
-            else:
-                logger.debug(f"联系人 {user_id} 在后端支持的列表中，允许处理")
-            return is_supported
-        
-        # 其他类型消息，默认拒绝（只处理私聊和群聊）
-        logger.debug(f"未知消息类型，拒绝处理")
-        return False
-        
-    except Exception as e:
-        logger.error(f"检查消息是否在后端支持列表中时出错: {e}", exc_info=True)
-        # 出错时默认拒绝，避免发送不应该发送的消息
-        return False
-
-
 def _get_supported_keywords():
     """延迟获取后端支持的关键词列表"""
     from ...app import get_supported_keywords
     return get_supported_keywords()
-
-
-async def _ensure_backend_ready(event: MessageEvent) -> bool:
-    """确保 MonCore 已连接；启动阶段失败后，消息到来时按固定地址重试一次。"""
-    try:
-        from ...app import ensure_moncore_ready
-
-        context_label = (
-            f"群聊 {event.group_id}"
-            if isinstance(event, GroupMessageEvent)
-            else f"私聊 {event.user_id}"
-        )
-        return await ensure_moncore_ready(f"收到{context_label}消息")
-    except Exception as e:
-        logger.error(f"按需恢复 MonCore 连接失败: {e}", exc_info=True)
-        return False
 
 
 def _is_keyword_trigger(event: MessageEvent) -> bool:
@@ -191,6 +100,9 @@ def _is_keyword_trigger(event: MessageEvent) -> bool:
 async def handle_message(bot: Bot, event: MessageEvent):
     """处理所有非命令消息（路由分发）"""
     try:
+        from .commands import is_command_message
+        if is_command_message(event):
+            return
         # 记录消息接收信息
         message_text = event.get_message().extract_plain_text()
         if isinstance(event, GroupMessageEvent):
@@ -198,19 +110,12 @@ async def handle_message(bot: Bot, event: MessageEvent):
         else:
             logger.info(f"收到消息 - 私聊: 用户: {event.user_id}, 内容: {message_text[:50]}")
 
-        # 本地许可/白黑名单过滤（先过滤，避免不必要的后端交互）
-        if not is_allowed_by_local_policy(event):
-            logger.debug("消息被本地策略过滤，跳过处理")
+        if not await is_allowed_by_backend(event):
+            logger.info("Core 未批准本次消息或服务不可用，请检查 Web QQBot 权限")
             return
 
-        if not await _ensure_backend_ready(event):
-            logger.warning("MonCore 当前不可用，跳过本次消息处理")
-            return
-
-        # 检查消息是否在后端支持的列表中（必须先检查，只有支持的才处理）
-        if not _is_supported_by_backend(event):
-            logger.debug(f"消息不在后端支持列表中，跳过处理")
-            return
+        from ..business.message.napcat_input import send_input_feedback
+        await send_input_feedback(event)
         
         # 判断是否为关键词触发
         if _is_keyword_trigger(event):

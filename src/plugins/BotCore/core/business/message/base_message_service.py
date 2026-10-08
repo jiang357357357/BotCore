@@ -221,8 +221,11 @@ class BaseMessageService:
             try:
                 if not self.napcat_api:
                     raise RuntimeError("NapCat API 未初始化")
-                await self.napcat_api.send_private_images(str(event.user_id), images_base64)
-                logger.info("已发送智能体图片回复: contact=%s pages=%s", event.user_id, len(images_base64))
+                if isinstance(event, GroupMessageEvent):
+                    await self.napcat_api.send_group_images(str(event.group_id), images_base64)
+                else:
+                    await self.napcat_api.send_private_images(str(event.user_id), images_base64)
+                logger.info("已发送智能体图片回复: context=%s pages=%s", context_label, len(images_base64))
                 return None
             except Exception as error:
                 logger.warning("智能体图片发送失败，回退文字: contact=%s error=%s", event.user_id, error)

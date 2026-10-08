@@ -3,6 +3,7 @@ NapCat API 接口
 通过 NoneBot2 的 OneBot V11 Bot 实例与 NapCat 交互
 """
 
+import asyncio
 import base64
 import hashlib
 import os
@@ -10,12 +11,16 @@ from pathlib import Path
 import time
 from typing import Optional, Dict, Any, List
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
+from nonebot.adapters.onebot.v11.exception import ActionFailed
+
+from src.plugins.BotCore.external.napcat.qzone import QzonePublishError, normalize_qzone_payload
+from src.plugins.BotCore.external.napcat.actions import NapCatActionsMixin
 
 from src.System.Logs import get_logger
 
 logger = get_logger(__name__)
 
-class NapCatAPI:
+class NapCatAPI(NapCatActionsMixin):
     """NapCat API 接口类（通过 NoneBot2 Bot 实例操作）"""
     
     def __init__(self):
@@ -23,6 +28,7 @@ class NapCatAPI:
         self._login_info: Optional[Dict[str, Any]] = None
         self._group_member_name_cache: Dict[tuple[str, str], tuple[float, str]] = {}
         self._group_member_alias_cache: Dict[str, tuple[float, Dict[str, str]]] = {}
+        self._message_send_locks: Dict[tuple[str, str], asyncio.Lock] = {}
     
     def set_bot(self, bot: Bot):
         """设置机器人实例"""
@@ -36,6 +42,34 @@ class NapCatAPI:
         result = await self.bot.call_api("get_status")
         online = self._read_mapping_or_attr(result, "online", None)
         return online if isinstance(online, bool) else None
+
+    async def publish_qzone(self, content: str, images=None, ugc_right: int = 4) -> Dict[str, Any]:
+        """Publish once through NapCat >= 4.18.14; never retry ambiguous outcomes."""
+        payload = normalize_qzone_payload(content, images, ugc_right)
+        if not self.bot:
+            raise QzonePublishError("NapCat 尚未连接，动态未发布", "BOT_OFFLINE")
+        try:
+            result = await asyncio.wait_for(self.bot.call_api("send_qzone_msg", **payload, _timeout=60.0), timeout=60.0)
+        except ActionFailed as error:
+            info = getattr(error, "info", {})
+            info = info if isinstance(info, dict) else {}
+            reason = str(info.get("message") or info.get("wording") or "QQ 空间拒绝了发布请求")[:200]
+            unsupported = info.get("retcode") in {1404, 404} or ("api" in reason.lower() and any(
+                marker in reason.lower() for marker in ("not found", "not supported", "unsupported", "不支持", "不存在")
+            ))
+            if unsupported:
+                raise QzonePublishError("当前 NapCat 不支持空间发布，请升级到 v4.18.14 或更新版本", "UNSUPPORTED_API") from error
+            if info.get("retcode") == 1400:
+                raise QzonePublishError(f"空间发布参数被拒绝：{reason}", "INVALID_PAYLOAD") from error
+            # NapCat also wraps network/parse errors and a missing remote tid in ActionFailed.
+            raise QzonePublishError(f"未能确认发布结果：{reason}。请先查看 QQ 空间，勿立即重复发布", "UPSTREAM_UNKNOWN", "unknown") from error
+        except Exception as error:
+            # A network error can happen after QQ has accepted the post.
+            raise QzonePublishError("未能确认发布结果，请先查看 QQ 空间，勿立即重复发布", "DELIVERY_UNKNOWN", "unknown") from error
+        tid = self._read_mapping_or_attr(result, "tid", None)
+        if not isinstance(tid, str) or not tid.strip():
+            raise QzonePublishError("NapCat 未返回说说 ID，请先查看 QQ 空间确认结果", "MISSING_TID", "unknown")
+        return {"tid": tid.strip(), "api": "send_qzone_msg"}
 
     async def send_text_message(self, target_type: str, target_id: str, content: str) -> Dict[str, Any]:
         """向 QQ 好友或群聊发送纯文本消息。"""
@@ -53,12 +87,11 @@ class NapCatAPI:
             raise ValueError("消息内容不能为空")
 
         message = Message(MessageSegment.text(text))
-        if normalized_type == "group":
-            api_name = "send_group_msg"
-            result = await self.bot.call_api(api_name, group_id=int(normalized_target), message=message)
-        else:
-            api_name = "send_private_msg"
-            result = await self.bot.call_api(api_name, user_id=int(normalized_target), message=message)
+        api_name = "send_group_msg" if normalized_type == "group" else "send_private_msg"
+        target = {"group_id" if normalized_type == "group" else "user_id": int(normalized_target)}
+        lock = self._message_send_locks.setdefault((normalized_type, normalized_target), asyncio.Lock())
+        async with lock:
+            result = await self.bot.call_api(api_name, **target, message=message)
 
         message_id = self._read_mapping_or_attr(result, "message_id", "")
         logger.info(f"QQ 消息发送成功: type={normalized_type} target={normalized_target} message_id={message_id}")
@@ -71,9 +104,17 @@ class NapCatAPI:
 
     async def send_private_images(self, user_id: str, images_base64: List[str]) -> Dict[str, Any]:
         """Send locally rendered PNG pages to one private QQ contact."""
+        return await self.send_images("user", user_id, images_base64)
+
+    async def send_group_images(self, group_id: str, images_base64: List[str]) -> Dict[str, Any]:
+        """Send locally rendered PNG pages to the originating group."""
+        return await self.send_images("group", group_id, images_base64)
+
+    async def send_images(self, target_type: str, target_id: str, images_base64: List[str]) -> Dict[str, Any]:
         if not self.bot:
             raise RuntimeError("机器人实例未设置")
-        if not str(user_id).isdigit() or not 1 <= len(images_base64) <= 8:
+        if (target_type not in {"user", "group"} or not str(target_id).isdigit() or int(target_id) <= 0
+                or not isinstance(images_base64, list) or not 1 <= len(images_base64) <= 8):
             raise ValueError("QQ 图片目标或页数无效")
         message = Message()
         for encoded in images_base64:
@@ -83,8 +124,15 @@ class NapCatAPI:
             if len(binary) > 1_500_000 or not binary.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise ValueError("QQ 图片必须是受限 PNG")
             message += MessageSegment.image(f"base64://{encoded}")
-        result = await self.bot.call_api("send_private_msg", user_id=int(user_id), message=message)
-        return {"message_id": str(self._read_mapping_or_attr(result, "message_id", "") or "")}
+        api_name = "send_group_msg" if target_type == "group" else "send_private_msg"
+        target = {"group_id" if target_type == "group" else "user_id": int(target_id)}
+        lock = self._message_send_locks.setdefault((target_type, str(target_id)), asyncio.Lock())
+        async with lock:
+            result = await self.bot.call_api(api_name, **target, message=message)
+        message_id = self._read_mapping_or_attr(result, "message_id", None)
+        if not isinstance(message_id, (str, int)) or isinstance(message_id, bool) or not str(message_id).strip():
+            raise RuntimeError("NapCat 图片发送未返回消息 ID")
+        return {"message_id": str(message_id)}
 
     async def read_private_file(self, file_id: str, expected_size: int) -> bytes:
         """Fetch a received QQ file from NapCat's local cache with a strict size bound."""
@@ -336,20 +384,6 @@ class NapCatAPI:
         """
         return f"https://p.qlogo.cn/gh/{group_id}/{group_id}/{size}"
     
-    async def get_role_info(self) -> Optional[str]:
-        """
-        从后端获取角色信息
-            
-        Returns:
-            角色信息文本，如果获取失败则返回 None
-        """
-        try:
-            logger.info("获取角色信息（未实现）")
-            return None
-            
-        except Exception as e:
-            logger.error(f"获取角色信息失败: {e}")
-            return None
     
     async def get_friend_list(self) -> List[Dict[str, Any]]:
         """

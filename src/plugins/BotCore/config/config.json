@@ -1,6 +1,4 @@
 {
-  "command_prefix": "/",
-  "enable_global_commands": true,
   "enable_mention_reply": true,
   "enable_name_mention": true,
   "default_reply": "哼！本小姐收到了你的消息，但不知道如何处理...",
@@ -16,16 +14,6 @@
     "状态": "本小姐运行正常！NapCat消息处理功能已启用！",
     "测试": "哼！测试功能正常！本小姐工作得很好！"
   },
-  "available_commands": [
-    "帮助",
-    "角色",
-    "模式",
-    "权限",
-    "审批",
-    "语音",
-    "好感",
-    "好感排行"
-  ],
   "log_level": "INFO",
   "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
   "max_message_length": 1000,
@@ -34,11 +22,5 @@
   "split_multiline_reply": false,
   "split_reply_interval_seconds": 0.35,
   "max_reply_segments": 8,
-  "split_reply_sentence_count": 2,
-  "group_default_permit": true,
-  "private_default_permit": true,
-  "group_allow_list": [],
-  "group_deny_list": [],
-  "private_allow_list": [],
-  "private_deny_list": []
+  "split_reply_sentence_count": 2
 }

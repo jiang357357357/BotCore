@@ -78,12 +78,7 @@ nonebot.init(
     driver=_driver,
     host=_nb.get("host", "127.0.0.1"),
     port=int(_nb.get("port", "8080")),
-    superusers={
-        uid.strip() for uid in _nb.get("superusers", "").split(",") if uid.strip()
-    },
     nickname=mon_config.section("bot").get("nicknames", "MonBot").split(","),
-    command_start={"/", "!", "！"},
-    command_sep={"."},
 )
 
 # ── OneBot V11 适配器配置 ──

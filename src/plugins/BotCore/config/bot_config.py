@@ -17,8 +17,6 @@ class BotConfig:
     bot_description: str = ""
     
     # 消息处理配置
-    command_prefix: str = "/"
-    enable_global_commands: bool = True  # 是否启用全局命令（不需要@机器人）
     enable_mention_reply: bool = True    # 是否启用@机器人回复
     enable_name_mention: bool = True     # 是否启用名字提及回复
     
@@ -39,11 +37,6 @@ class BotConfig:
         "测试": "哼！测试功能正常！本小姐工作得很好！"
     })
     
-    # 命令配置
-    available_commands: List[str] = field(default_factory=lambda: [
-        "帮助", "角色", "模式", "权限", "审批", "语音", "好感", "好感排行", "记忆", "记忆列表"
-    ])
-    
     # 日志配置
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -57,17 +50,8 @@ class BotConfig:
     max_reply_segments: int = 8
     split_reply_sentence_count: int = 2
 
-    # 本地白黑名单/许可开关（在后端 supported_contacts/groups 过滤之前额外生效）
-    # 许可开关含义：
-    # - *_default_permit=True：默认处理，命中拒绝列表则拒绝
-    # - *_default_permit=False：默认不处理，仅认可列表允许处理
-    group_default_permit: bool = True
-    private_default_permit: bool = True
-    group_allow_list: List[str] = field(default_factory=list)    # 群聊认可列表（群号字符串）
-    group_deny_list: List[str] = field(default_factory=list)     # 群聊拒绝列表（群号字符串）
-    private_allow_list: List[str] = field(default_factory=list)  # 私聊认可列表（QQ号字符串）
-    private_deny_list: List[str] = field(default_factory=list)   # 私聊拒绝列表（QQ号字符串）
-    
+    # QQ 业务权限由 Web 管理、Core 判断；旧本地许可字段加载时忽略。
+
     def __post_init__(self):
         """初始化后处理。Bot 身份由 NapCat/Server 提供，本地只保留运行开关。"""
         self.bot_name = str(self.bot_name or "").strip()
@@ -109,15 +93,9 @@ class BotConfig:
         """获取关键词回复"""
         return self.keyword_responses.get(keyword.lower(), "")
     
-    def is_valid_command(self, command: str) -> bool:
-        """检查是否是有效命令"""
-        return command.lower() in [cmd.lower() for cmd in self.available_commands]
-    
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "command_prefix": self.command_prefix,
-            "enable_global_commands": self.enable_global_commands,
             "enable_mention_reply": self.enable_mention_reply,
             "enable_name_mention": self.enable_name_mention,
             "default_reply": self.default_reply,
@@ -125,7 +103,6 @@ class BotConfig:
             "private_reply": self.private_reply,
             "voice_mode_enabled": self.voice_mode_enabled,
             "keyword_responses": self.keyword_responses,
-            "available_commands": self.available_commands,
             "log_level": self.log_level,
             "log_format": self.log_format,
             "max_message_length": self.max_message_length,
@@ -136,12 +113,6 @@ class BotConfig:
             "max_reply_segments": self.max_reply_segments,
             "split_reply_sentence_count": self.split_reply_sentence_count,
 
-            "group_default_permit": self.group_default_permit,
-            "private_default_permit": self.private_default_permit,
-            "group_allow_list": self.group_allow_list,
-            "group_deny_list": self.group_deny_list,
-            "private_allow_list": self.private_allow_list,
-            "private_deny_list": self.private_deny_list,
         }
     
     @classmethod

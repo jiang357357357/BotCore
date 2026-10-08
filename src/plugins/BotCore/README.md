@@ -100,14 +100,13 @@ voice_mode_enabled: bool          # 语音模式开关
 
 **配置项**：
 - 机器人名字 / 昵称
-- 命令前缀
 - 触发规则（`enable_mention_reply` / `enable_name_mention`）
 - 关键词回复
 
 ### Layer 3: core/router/ - 路由层
 
 **职责**：
-- 注册 NoneBot 事件处理器（`on_command` / `on_message`）
+- 注册 NoneBot 消息处理器；命令只使用一个 `on_message` 入口
 - 命令解析 & 分发
 - 白名单过滤
 - 关键词触发判断
@@ -130,10 +129,7 @@ voice_mode_enabled: bool          # 语音模式开关
 - 调用外部服务层完成功能
 
 **服务**：
-- `CommandService`：命令业务处理
-  - 生成帮助文本
-  - 获取角色信息
-  - 语音模式开关
+- `CommandService`：旧调用兼容入口，转到统一命令通道；不生成帮助或自行判定权限
 - `GroupMessageService`：群聊消息业务
   - 存储消息到后端
   - 请求 AI 回复
@@ -223,18 +219,15 @@ NoneBot 启动
 ```
 收到 QQ 消息
   → NoneBot 事件分发
-      → 命令消息（/开头）
-          → commands.py
-              → CommandService
-                  → /帮助：动态获取命令列表
-                  → /角色：调用后端获取角色信息
-                  → /语音：查询或切换 voice_mode_enabled
-                  → /好感：查询当前用户的四维好感状态
-                  → /好感排行：查询当前群/当前 Bot 的好感总值排行
-      
+      → 命令消息
+          → commands.py 单一入口
+              → qqCommand 请求
+                  → Core 命令目录、参数校验、权限策略和执行
+              → 统一回执、授权的语音设置、图片或文字回复
+
       → 普通消息
           → message_handlers.py
-              → _is_supported_by_backend()  # 白名单过滤
+              → is_allowed_by_backend()  # Core 实时准入
                   ✗ 不在白名单 → 丢弃
                   ✓ 在白名单 → 继续
               
@@ -384,24 +377,9 @@ Layer 6 (utils)         → 无依赖
 
 ### 添加新命令
 
-1. 在 `core/router/commands.py` 中注册命令：
-
-```python
-new_cmd = on_command("新命令", block=True)
-
-@new_cmd.handle()
-async def handle_new_cmd(event: MessageEvent):
-    result = await command_service.handle_new_command(event)
-    await new_cmd.finish(Message(result))
-```
-
-2. 在 `core/business/command/command_service.py` 中实现业务逻辑：
-
-```python
-async def handle_new_command(self, event: MessageEvent) -> str:
-    # 业务逻辑
-    return "处理结果"
-```
+1. 在 Core 的 `Application/Domain/BOT/Core/command_registry.py` 登记名称、别名、用法、参数限制、权限和会话范围。
+2. 在同目录 `command_service.py` 实现执行与参数校验，并返回统一状态及内容。
+3. 添加 Core 测试。BotCore 的单一 `command_matcher` 和 `qqCommand` 传输自动支持新目录，帮助无需另外维护。
 
 ### 添加新的消息处理逻辑
 
@@ -419,16 +397,9 @@ if moncore_api:
 
 ## 命令与权限
 
-命令前缀由 NoneBot 配置控制，当前支持 `/`、`!`、`！`。
+命令固定支持 `/`、`!`、`！`，群聊可先 @机器人。全部权限由 Core 判断，个人超级管理员继承管理员权限，显式拉黑优先。命令名称、别名、参数和权限的完整目录通过 `/帮助` 获取，协议及更新要求见 [BotCore README](../../../README.md#统一-qq-命令)。
 
-| 命令 | 说明 | 权限 |
-| --- | --- | --- |
-| `/帮助` | 查看当前已注册命令 | 所有人 |
-| `/角色`、`/设定` | 查看当前 QQBot 绑定角色 | superuser，或当前群/发言人任一被后端支持 |
-| `/语音` | 查看语音模式状态 | superuser，或当前群/发言人任一被后端支持 |
-| `/语音 开启`、`/语音 关闭` | 修改全局语音模式 | superuser |
-| `/好感` | 查看自己与当前角色的四维好感值 | superuser，或当前群/发言人任一被后端支持 |
-| `/好感排行`、`/好感榜` | 查看好感总值排行；群聊中限定当前群，私聊中查看当前 Bot 全局排行 | superuser，或当前群/发言人任一被后端支持 |
+查询语音需要会话授权，修改语音需要个人管理员或超级管理员，可在群聊或私聊执行。查询他人的记忆也需要管理员或超级管理员。状态、模式、权限、审批、说说及 QQ 管理命令仅供超级管理员私聊使用。好感相关命令返回停用提示。旧本地命令列表、SUPERUSERS 和独立命令 RPC 不再参与处理。
 
 ### 调用 QQ API
 

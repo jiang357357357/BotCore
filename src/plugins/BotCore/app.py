@@ -155,10 +155,10 @@ napcat_api = NapCatAPI()
 # 从 .monconfig [moncore] 读取后端连接参数
 _mc = mon_config.section("moncore")
 connection_manager = ConnectionManager(
-    server_ip=_mc.get("IP") or "127.0.0.1",
-    ws_port=int(_mc.get("WS_PORT", "40011")),
-    http_host=_mc.get("HTTP_HOST", "127.0.0.1"),
-    pairing_token=os.getenv("MON_QQBOT_PAIRING_TOKEN") or _mc.get("PAIRING_TOKEN"),
+    server_ip=_mc.get("ip") or "127.0.0.1",
+    ws_port=int(_mc.get("ws_port", "40011")),
+    http_host=_mc.get("http_host", "127.0.0.1"),
+    pairing_token=os.getenv("MON_QQBOT_PAIRING_TOKEN") or _mc.get("pairing_token"),
 )
 _moncore_reconnect_lock = asyncio.Lock()
 _last_moncore_reconnect_attempt = 0.0
@@ -252,6 +252,13 @@ async def _on_registered_callback():
         logger.warning("WebSocket 客户端未就绪，MonCoreAPI 初始化延迟")
     _ensure_bot_info_sync_task()
     _ensure_bot_status_sync_task()
+    from .external.monCore.event_outbox import get_event_relay
+    try:
+        if ctx.moncore_api:
+            ctx.moncore_api._napcat_event_account = str(connection_manager.qq_number)
+        await get_event_relay().resume(str(connection_manager.qq_number))
+    except Exception:
+        logger.warning("QQ 事件待发队列暂不可用，聊天连接已恢复")
     asyncio.create_task(sync_bot_info_once("registered"))
     asyncio.create_task(sync_bot_status_once(force=True))
 
@@ -397,6 +404,7 @@ def _ensure_bot_status_sync_task():
 
 from .core.router import commands  # noqa: E402
 from .core.router import message_handlers  # noqa: E402
+from .core.router import napcat_commands, napcat_events  # noqa: E402
 
 logger.info("BotCore 插件启动模块已加载")
 
@@ -441,6 +449,8 @@ async def on_bot_disconnect(bot: Bot):
 async def shutdown_disconnect_moncore():
     """关闭时断开 MonCore 连接"""
     global _bot_info_sync_task, _bot_status_sync_task
+    from .external.monCore.event_outbox import get_event_relay
+    await get_event_relay().stop()
     if _bot_info_sync_task and not _bot_info_sync_task.done():
         _bot_info_sync_task.cancel()
         _bot_info_sync_task = None

@@ -14,13 +14,19 @@ from typing import Optional, Dict, Any, Callable
 from nonebot.adapters.onebot.v11 import MessageEvent, GroupMessageEvent, PrivateMessageEvent
 
 from ..client import WebSocketClient
+from .qzone_api import QzonePublishMixin
+from .napcat_actions_api import NapCatActionsMixin
+from .commands_api import CommandsMixin
 from src.System.Logs import get_logger
 
 logger = get_logger(__name__)
 
 
-class MonCoreAPI:
+class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
     """MonCore API 接口类"""
+
+    MODE_DETECTION_GRACE = 10.0
+    AGENT_REPLY_TIMEOUT = 1830.0
     
     def __init__(self, ws_client: WebSocketClient, server_ip: Optional[str] = None, http_port: Optional[int] = None, http_host: Optional[str] = None):
         """
@@ -39,10 +45,15 @@ class MonCoreAPI:
         self.pending_requests: Dict[str, asyncio.Future] = {}  # 等待响应的请求（key: request_id）
         self.pending_chat_modes: Dict[str, asyncio.Future] = {}
         self.pending_card_requests: Dict[str, asyncio.Future] = {}
+        self.pending_access_requests: Dict[str, asyncio.Future] = {}
         self.pending_file_sends: Dict[str, Dict[str, Any]] = {}
         self.pending_store_requests: Dict[str, asyncio.Future] = {}  # 等待存储响应的请求（key: store_request_id）
         self.chat_send_locks: Dict[str, asyncio.Lock] = {}
         self.reply_callbacks: list[Callable] = []  # 回复回调函数列表
+        self._host_message_tasks: set[asyncio.Task] = set()
+        self._init_qzone()
+        self._init_napcat_actions()
+        self._init_commands()
         
         # 注册消息处理器
         self.register_ws_handlers()
@@ -53,12 +64,41 @@ class MonCoreAPI:
         self.ws_client.register_handler("chat", self._handle_chat_processing)
         self.ws_client.register_handler("error", self._handle_error)
         self.ws_client.register_handler("store", self._handle_store_response)
-        self.ws_client.register_handler("favorability", self._handle_favorability_response)
-        self.ws_client.register_handler("memory", self._handle_memory_response)
-        self.ws_client.register_handler("sendMessageHost", self._handle_send_message_host)
+        self.ws_client.register_handler("sendMessageHost", self._schedule_send_message_host)
         self.ws_client.register_handler("historyHost", self._handle_history_host)
         self.ws_client.register_handler("sync_bot_info", self._handle_sync_bot_info)
         self.ws_client.register_handler("renderCard", self._handle_render_card)
+        self.ws_client.register_handler("accessCheck", self._handle_access_check)
+        self.ws_client.register_handler("qqCommand", self._handle_command_response)
+        self.ws_client.register_handler("qzonePublishHost", self._schedule_qzone_publish_host)
+        self.ws_client.register_handler("napcatActionHost", self._schedule_napcat_action_host)
+        self.ws_client.register_handler("napcatEventAck", self._handle_napcat_event_ack)
+
+    async def check_access(self, event: MessageEvent, *, capability="chat", target_qq="", timeout=8.0):
+        request_id = secrets.token_hex(16)
+        future = asyncio.get_running_loop().create_future()
+        self.pending_access_requests[request_id] = future
+        denied = {"approved": False, "code": "BACKEND_UNAVAILABLE"}
+        try:
+            sent = await self.ws_client.send({"command": "accessCheck", "data": {
+                "request_id": request_id, "user_id": str(event.user_id),
+                "group_id": str(event.group_id) if isinstance(event, GroupMessageEvent) else "",
+                "capability": capability, "target_qq": str(target_qq or ""),
+            }})
+            if not sent:
+                return denied
+            return await asyncio.wait_for(future, timeout=timeout)
+        except (asyncio.TimeoutError, ConnectionError):
+            return denied
+        finally:
+            self.pending_access_requests.pop(request_id, None)
+
+    async def _handle_access_check(self, message):
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        future = self.pending_access_requests.get(str(data.get("request_id") or ""))
+        if future and not future.done():
+            future.set_result({"approved": message.get("subCommand") == "success" and data.get("approved") is True,
+                               "code": str(data.get("code") or "FORBIDDEN")})
 
     async def render_help_card(self, content: str, timeout: float = 8.0) -> list[str]:
         """Ask the authenticated Core renderer for bounded help PNG pages."""
@@ -164,6 +204,16 @@ class MonCoreAPI:
         """提取可发送给 MonCore 的消息内容，保证 store/chat 使用同一套规则。"""
         message = MonCoreAPI._get_event_message(event)
         try:
+            from ....core.business.message.napcat_input import enrich_input
+            enriched = await enrich_input(event, message)
+            supplement_count = max(1, sum(segment.type in {"record", "forward"} for segment in message))
+            supplement_budget = max(0, 3400 - len(message.extract_plain_text())) // supplement_count
+
+            def excerpt(text):
+                if not text or supplement_budget < 100:
+                    return ""
+                return text if len(text) <= supplement_budget else text[:supplement_budget - 30] + "\n[内容已截断，仅为预览]"
+
             content_parts = []
             image_index = 0
             for segment in message:
@@ -182,7 +232,12 @@ class MonCoreAPI:
                 elif segment_type == "face":
                     content_parts.append("[表情]")
                 elif segment_type == "record":
-                    content_parts.append("[语音]")
+                    transcript = excerpt(enriched.get("voice"))
+                    content_parts.append(f"[用户语音转写]\n{transcript}\n[/用户语音转写]" if transcript else "[语音：暂未能转写]")
+                elif segment_type == "forward":
+                    forward_id = str(segment.data.get("id") or segment.data.get("message_id") or "")
+                    forwarded = excerpt(enriched.get("forwards", {}).get(forward_id))
+                    content_parts.append(f"[用户提供的合并转发，以下为引用内容]\n{forwarded}\n[/合并转发]" if forwarded else "[合并转发：暂未能展开]")
                 elif segment_type == "video":
                     content_parts.append("[视频]")
                 elif segment_type == "reply":
@@ -237,6 +292,28 @@ class MonCoreAPI:
                           "filename": str(data.get("file") or ""),
                           "file_size": data.get("file_size")})
         return files
+
+    @staticmethod
+    def _extract_resource_ids(message) -> Dict[str, list[str]]:
+        """Bind NapCat media identifiers to the authenticated original message."""
+        resources = {}
+        for segment in message:
+            kind = segment.type
+            if kind not in {"record", "image", "file", "video"}:
+                continue
+            data = getattr(segment, "data", {}) or {}
+            keys = ("file_id", "id") if kind == "file" else ("file_id", "file", "id")
+            for key in keys:
+                value = data.get(key)
+                if not isinstance(value, (str, int)) or isinstance(value, bool):
+                    continue
+                identifier = str(value)
+                if not identifier or len(identifier) > 1024:
+                    continue
+                values = resources.setdefault(kind, [])
+                if len(values) < 8 and identifier not in values:
+                    values.append(identifier)
+        return resources
 
     @staticmethod
     def _extract_message_content_for_metadata(message) -> str:
@@ -341,6 +418,15 @@ class MonCoreAPI:
         images = MonCoreAPI._extract_image_metadata(event)
         if images:
             metadata["images"] = images
+        resource_ids = MonCoreAPI._extract_resource_ids(message)
+        if resource_ids:
+            metadata["resource_ids"] = resource_ids
+        forward_ids = [str(segment.data.get("id") or segment.data.get("message_id") or "")
+                       for segment in message if segment.type == "forward"]
+        if forward_ids:
+            metadata["forward_ids"] = [identifier for identifier in forward_ids[:3] if 0 < len(identifier) <= 256]
+        if event.__dict__.get("_mon_napcat_input"):
+            metadata["enriched_input"] = True
         files = MonCoreAPI._extract_file_metadata(message)
         if files:
             metadata["files"] = files
@@ -349,6 +435,8 @@ class MonCoreAPI:
             metadata["reply_to"] = reply_to
         if group_id:
             metadata["group_id"] = group_id
+            from ....core.router.message_handlers import _is_keyword_trigger
+            metadata["group_agent_trigger"] = bool(_is_keyword_trigger(event))
         return metadata
     
     async def store_message(self, event: MessageEvent, timeout: float = 10.0) -> bool:
@@ -446,6 +534,34 @@ class MonCoreAPI:
                 self.pending_store_requests.pop(store_request_id, None)
             return False
     
+    async def _wait_for_chat_reply(self, future: asyncio.Future, mode_future: asyncio.Future, timeout: float) -> Dict[str, Any]:
+        """Only an explicit normal-mode acknowledgement may use the short deadline."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.MODE_DETECTION_GRACE
+        detecting_mode = True
+        watch_mode = True
+        while True:
+            waiting = {future, mode_future} if watch_mode else {future}
+            done, _ = await asyncio.wait(
+                waiting, timeout=max(0.0, deadline - loop.time()), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if future in done:
+                return future.result()
+            if watch_mode and mode_future in done:
+                watch_mode = False
+                wait_seconds = timeout if mode_future.result() == "normal" else self.AGENT_REPLY_TIMEOUT
+                next_deadline = loop.time() + wait_seconds
+                deadline = next_deadline if detecting_mode else min(deadline, next_deadline)
+                detecting_mode = False
+                continue
+            if detecting_mode:
+                # Missing/legacy processing notices do not establish ordinary chat.
+                deadline = loop.time() + self.AGENT_REPLY_TIMEOUT
+                detecting_mode = False
+                logger.warning("回复模式尚未确认，保留长任务等待，上限=%ss", self.AGENT_REPLY_TIMEOUT)
+                continue
+            raise asyncio.TimeoutError
+
     async def request_reply(
         self,
         event: MessageEvent,
@@ -487,9 +603,11 @@ class MonCoreAPI:
             
         Returns:
             回复内容字典，包含 "content" 和可选的 "audio_url"
-            如果超时或失败则返回 None
+            超时返回可发送的文字提示；其他失败返回 None
         """
         request_id = None
+        future = None
+        mode_future = None
         send_lock = None
         owns_send_lock = False
         try:
@@ -600,19 +718,15 @@ class MonCoreAPI:
             # 等待响应（带超时）
             # 后端返回的 reply 包含 request_id，用于精确匹配
             try:
-                done, _ = await asyncio.wait({future, mode_future}, timeout=10.0, return_when=asyncio.FIRST_COMPLETED)
-                if future in done:
-                    reply_data = future.result()
-                else:
-                    agent_mode = mode_future in done and mode_future.result() == "agent"
-                    reply_data = await asyncio.wait_for(future, timeout=1830.0 if agent_mode else timeout)
+                reply_data = await self._wait_for_chat_reply(future, mode_future, timeout)
                 logger.info(f"收到回复: request_id={request_id}, qq_number={qq_number}, has_content={bool(reply_data.get('content'))}, has_audio={bool(reply_data.get('audio_url'))}")
                 return reply_data
             except asyncio.TimeoutError:
                 logger.warning(f"等待回复超时: request_id={request_id}, qq_number={qq_number}")
                 if request_id in self.pending_requests:
                     self.pending_requests.pop(request_id, None)
-                return None
+                return {"content": "等待回复已超时。如已启动智能体任务，请先在 Agent 会话中查看执行结果。",
+                        "audio_url": None, "images_base64": [], "error_code": "REPLY_TIMEOUT"}
                 
         except Exception as e:
             logger.error(f"请求回复时出错: {e}")
@@ -624,200 +738,14 @@ class MonCoreAPI:
             if owns_send_lock and send_lock is not None:
                 send_lock.release()
             if request_id:
+                self.pending_requests.pop(request_id, None)
                 self.pending_chat_modes.pop(request_id, None)
+            for pending in (future, mode_future):
+                if pending is not None and not pending.done():
+                    pending.cancel()
     
-    async def get_role_info(self, timeout: float = 10.0) -> Optional[str]:
-        """
-        获取角色信息
-        
-        Args:
-            timeout: 超时时间（秒）
-            
-        Returns:
-            角色信息文本，如果获取失败则返回 None
-        """
-        request_id = None
-        try:
-            # 创建一个唯一的请求ID
-            request_id = f"role_info_{asyncio.get_running_loop().time()}"
-            
-            # 创建等待响应的 Future
-            future = asyncio.Future()
-            self.pending_requests[request_id] = future
-            
-            # 发送角色信息请求
-            # 注意：这里需要根据后端的实际协议来发送请求
-            # 假设后端支持 role 命令
-            message = {
-                "command": "role",
-                "subCommand": "get",
-                "data": {
-                    "request_id": request_id
-                }
-            }
-            
-            success = await self.ws_client.send(message)
-            
-            if not success:
-                if request_id:
-                    self.pending_requests.pop(request_id, None)
-                logger.error("发送角色信息请求失败")
-                return None
-            
-            logger.info("已发送角色信息请求，等待回复...")
-            
-            # 等待响应（带超时）
-            try:
-                role_info = await asyncio.wait_for(future, timeout=timeout)
-                logger.info("收到角色信息")
-                return role_info
-            except asyncio.TimeoutError:
-                logger.warning("等待角色信息超时")
-                if request_id:
-                    self.pending_requests.pop(request_id, None)
-                return None
-                
-        except Exception as e:
-            logger.error(f"获取角色信息时出错: {e}")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
 
-    async def get_favorability(
-        self,
-        event: MessageEvent,
-        user_qq_number: Optional[str] = None,
-        timeout: float = 10.0,
-    ) -> Optional[Dict[str, Any]]:
-        """查询指定 QQ 用户与当前 Bot 绑定角色的好感状态；默认查当前发送者。"""
-        request_id = None
-        try:
-            is_group = isinstance(event, GroupMessageEvent)
-            session_qq_number = str(event.group_id if is_group else event.user_id)
-            target_qq_number = str(user_qq_number or event.user_id)
-            request_id = f"favorability_{int(time.time() * 1000)}_{target_qq_number}"
 
-            future = asyncio.Future()
-            self.pending_requests[request_id] = future
-
-            success = await self.ws_client.send(
-                {
-                    "command": "favorability",
-                    "subCommand": "get",
-                    "data": {
-                        "request_id": request_id,
-                        "action": "self",
-                        "session_qq_number": session_qq_number,
-                        "is_group": is_group,
-                        "user_qq_number": target_qq_number,
-                    },
-                }
-            )
-            if not success:
-                self.pending_requests.pop(request_id, None)
-                return None
-
-            return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("等待好感状态响应超时")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
-        except Exception as e:
-            logger.error(f"查询好感状态时出错: {e}")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
-
-    async def get_favorability_ranking(self, event: MessageEvent, limit: int = 10, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-        """查询当前群/当前 Bot 的用户好感总值排行。"""
-        request_id = None
-        try:
-            is_group = isinstance(event, GroupMessageEvent)
-            session_qq_number = str(event.group_id) if is_group else ""
-            request_id = f"favorability_ranking_{int(time.time() * 1000)}_{event.user_id}"
-
-            future = asyncio.Future()
-            self.pending_requests[request_id] = future
-
-            data = {
-                "request_id": request_id,
-                "action": "ranking",
-                "limit": limit,
-            }
-            if is_group:
-                data["session_qq_number"] = session_qq_number
-                data["is_group"] = True
-
-            success = await self.ws_client.send(
-                {
-                    "command": "favorability",
-                    "subCommand": "ranking",
-                    "data": data,
-                }
-            )
-            if not success:
-                self.pending_requests.pop(request_id, None)
-                return None
-
-            return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("等待好感排行响应超时")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
-        except Exception as e:
-            logger.error(f"查询好感排行时出错: {e}")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
-
-    async def get_memories(
-        self,
-        event: MessageEvent,
-        user_qq_number: Optional[str] = None,
-        limit: int = 10,
-        timeout: float = 10.0,
-    ) -> Optional[Dict[str, Any]]:
-        """查询指定 QQ 用户在当前 Bot 会话中的最近记忆；默认查当前发送者。"""
-        request_id = None
-        try:
-            is_group = isinstance(event, GroupMessageEvent)
-            session_qq_number = str(event.group_id if is_group else event.user_id)
-            target_qq_number = str(user_qq_number or event.user_id)
-            request_id = f"memory_{int(time.time() * 1000)}_{target_qq_number}"
-
-            future = asyncio.Future()
-            self.pending_requests[request_id] = future
-
-            success = await self.ws_client.send(
-                {
-                    "command": "memory",
-                    "subCommand": "list",
-                    "data": {
-                        "request_id": request_id,
-                        "session_qq_number": session_qq_number,
-                        "is_group": is_group,
-                        "user_qq_number": target_qq_number,
-                        "limit": limit,
-                    },
-                }
-            )
-            if not success:
-                self.pending_requests.pop(request_id, None)
-                return None
-
-            return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning("等待记忆列表响应超时")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
-        except Exception as e:
-            logger.error(f"查询记忆列表时出错: {e}")
-            if request_id:
-                self.pending_requests.pop(request_id, None)
-            return None
     
     def register_reply_callback(self, callback: Callable):
         """
@@ -835,9 +763,12 @@ class MonCoreAPI:
             return
         data = message.get("data") if isinstance(message.get("data"), dict) else {}
         request_id = str(data.get("request_id") or "")
+        mode = data.get("mode")
+        if mode not in ("normal", "agent"):
+            return
         future = self.pending_chat_modes.get(request_id)
         if future and not future.done():
-            future.set_result(str(data.get("mode") or "normal"))
+            future.set_result(mode)
 
     async def _handle_reply(self, message: Dict[str, Any]):
         """
@@ -855,7 +786,8 @@ class MonCoreAPI:
         
         匹配逻辑：
         - 如果提供了 request_id，使用 request_id 精确匹配
-        - 如果找不到对应的 request_id，记录警告并调用回调函数（用于推送的回复）
+        - 如果指定的 request_id 已失效，记录警告并丢弃，避免误送到其他请求
+        - 未指定 request_id 的推送沿用独立回调
         
         audio_url 处理：
         - 如果 audio_url 是相对路径（以 / 开头），则拼接服务器地址和端口
@@ -987,6 +919,29 @@ class MonCoreAPI:
                 }
             )
 
+    async def _schedule_send_message_host(self, message: Dict[str, Any]):
+        """Send progress cards without holding the socket's only receive loop."""
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        if data.get("file_phase") is not None:
+            # File chunks are ordered protocol frames; retain their existing handling.
+            await self._handle_send_message_host(message)
+            return
+        if len(self._host_message_tasks) >= 16:
+            await self._send_message_host_ack("error", {
+                "request_id": str(data.get("request_id") or ""), "status": "failed",
+                "message": "QQ 消息发送繁忙，本条进度消息未发送",
+            })
+            return
+        task = asyncio.create_task(self._handle_send_message_host(message))
+        self._host_message_tasks.add(task)
+
+        def finished(completed):
+            self._host_message_tasks.discard(completed)
+            if not completed.cancelled() and completed.exception() is not None:
+                logger.warning("QQ 主动消息处理未能完成回执")
+
+        task.add_done_callback(finished)
+
     async def _handle_send_message_host(self, message: Dict[str, Any]):
         """处理 MonCore 主动下发的 QQ 发送命令。"""
         data = message.get("data", {}) if isinstance(message.get("data"), dict) else {}
@@ -1004,13 +959,14 @@ class MonCoreAPI:
             if not napcat_api:
                 raise RuntimeError("NapCat API 未初始化")
             if images is not None:
-                if target_type != "user" or not isinstance(images, list) or not 1 <= len(images) <= 8:
-                    raise ValueError("主动 QQ 图片只支持 1 至 8 张私聊卡片")
+                if target_type not in {"user", "group"} or not isinstance(images, list) or not 1 <= len(images) <= 8:
+                    raise ValueError("主动 QQ 图片只支持 1 至 8 张好友或群聊卡片")
                 try:
-                    result = await napcat_api.send_private_images(target_qq_number, images)
+                    sender = napcat_api.send_group_images if target_type == "group" else napcat_api.send_private_images
+                    result = await sender(target_qq_number, images)
                     if not result.get("message_id"):
                         raise RuntimeError("QQ 图片发送后未返回消息 ID")
-                    result["api"] = "send_private_msg"
+                    result["api"] = "send_group_msg" if target_type == "group" else "send_private_msg"
                 except Exception as image_error:
                     logger.warning("主动 QQ 卡片发送失败，改发文字: request_id=%s error=%s", request_id, image_error)
                     result = await napcat_api.send_text_message(
@@ -1155,53 +1111,3 @@ class MonCoreAPI:
                 
         except Exception as e:
             logger.error(f"处理存储响应消息时出错: {e}")
-
-    async def _handle_favorability_response(self, message: Dict[str, Any]):
-        """处理好感状态/排行响应。"""
-        try:
-            data = message.get("data", {})
-            request_id = str(data.get("request_id") or "")
-            if not request_id:
-                logger.warning("收到好感响应但缺少 request_id")
-                return
-
-            if request_id not in self.pending_requests:
-                logger.warning(f"收到好感响应但未找到待处理请求: request_id={request_id}")
-                return
-
-            future = self.pending_requests.pop(request_id)
-            if future.done():
-                return
-
-            if message.get("subCommand") == "error":
-                future.set_result({"success": False, "message": data.get("message", "查询失败")})
-                return
-
-            future.set_result({"success": True, **(data.get("result") or {})})
-        except Exception as e:
-            logger.error(f"处理好感响应时出错: {e}")
-
-    async def _handle_memory_response(self, message: Dict[str, Any]):
-        """处理记忆列表响应。"""
-        try:
-            data = message.get("data", {})
-            request_id = str(data.get("request_id") or "")
-            if not request_id:
-                logger.warning("收到记忆响应但缺少 request_id")
-                return
-
-            if request_id not in self.pending_requests:
-                logger.warning(f"收到记忆响应但未找到待处理请求: request_id={request_id}")
-                return
-
-            future = self.pending_requests.pop(request_id)
-            if future.done():
-                return
-
-            if message.get("subCommand") == "error":
-                future.set_result({"success": False, "message": data.get("message", "查询失败")})
-                return
-
-            future.set_result({"success": True, **(data.get("result") or {})})
-        except Exception as e:
-            logger.error(f"处理记忆响应时出错: {e}")

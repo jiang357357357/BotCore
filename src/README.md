@@ -76,22 +76,11 @@ __all__ = ["some_function"]
 from src.System.NewTool import some_function
 ```
 
-### 添加新的 NoneBot 插件
+### 添加新的 QQ 命令
 
-在 `plugins/` 下创建新目录，例如 `plugins/NewPlugin/`：
+在 Core 的 `Application/Domain/BOT/Core/command_registry.py` 登记命令，在同目录 `command_service.py` 实现执行和参数校验。BotCore 共用一个消息入口和 `qqCommand` 通道，避免为业务命令另外注册 NoneBot matcher 或本地权限。帮助直接来自 Core 目录，新增命令不需要修改前端列表。
 
-```python
-# plugins/NewPlugin/__init__.py
-from nonebot import on_command
-
-test_cmd = on_command("test")
-
-@test_cmd.handle()
-async def handle_test():
-    await test_cmd.finish("测试成功")
-```
-
-NoneBot 会自动加载并注册。
+非命令插件可以在 `plugins/` 下新增模块处理通知等事件，使用项目现有的后端授权策略。
 
 ## 注意事项
 
