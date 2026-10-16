@@ -18,6 +18,7 @@ from .qzone_api import QzonePublishMixin
 from .napcat_actions_api import NapCatActionsMixin
 from .commands_api import CommandsMixin
 from src.System.Logs import get_logger
+from src.plugins.BotCore.external.napcat.file_limits import MAX_FILE_BYTES, MAX_IMAGE_BYTES, FILE_TRANSFER_TIMEOUT_SECONDS
 
 logger = get_logger(__name__)
 
@@ -375,6 +376,9 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
                     images = MonCoreAPI._extract_message_image_metadata(message)
                     if images:
                         reply_metadata["images"] = images
+                    files = MonCoreAPI._extract_file_metadata(message)
+                    if files:
+                        reply_metadata["files"] = files
 
             if not reply_metadata:
                 message = MonCoreAPI._get_event_message(event)
@@ -637,54 +641,18 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             is_group_flag = 1 if is_group else 0
             request_id = f"{timestamp_ms}_{is_group_flag}_{qq_number}_{secrets.token_hex(4)}"
 
-            if not is_group and (metadata.get("files") or metadata.get("images")):
+            if is_group:
+                from .group_file_input import prepare_group_file_input
                 try:
-                    files = metadata.get("files") or []
-                    images = metadata.get("images") or []
-                    if len(files) + len(images) > 4:
-                        raise ValueError("一次最多发送 4 个文件或图片")
-                    from src.plugins.BotCore.app import napcat_api
-                    if not napcat_api:
-                        raise RuntimeError("NapCat 未连接")
-                    uploaded = []
-                    for kind, index, item in [*(('file', index, item) for index, item in enumerate(files, 1)),
-                                              *(('image', index, item) for index, item in enumerate(images, 1))]:
-                        size = int(item.get("file_size") or 0)
-                        if kind == "file":
-                            filename = str(item.get("filename") or "")
-                            file_id = str(item.get("file_id") or "")
-                            if not filename or not file_id or size < 0 or size > 8 * 1024 * 1024:
-                                raise ValueError("文件信息无效或单文件超过 8 MiB")
-                            blob = await napcat_api.read_private_file(file_id, size)
-                        else:
-                            image_file = str(item.get("file") or "")
-                            if not image_file or size < 0 or size > 8 * 1024 * 1024:
-                                raise ValueError("图片信息无效或单张图片超过 8 MiB")
-                            blob, extension = await napcat_api.read_private_image(image_file, size)
-                            filename = f"qq-image-{index}.{extension}"
-                        upload_id = secrets.token_hex(16)
-                        sha256 = hashlib.sha256(blob).hexdigest()
-                        head = {"command": "fileUpload", "data": {"phase": "start", "upload_id": upload_id,
-                                "request_id": request_id, "qq_number": qq_number,
-                                "message_id": metadata.get("onebot_message_id"),
-                                "filename": filename, "size": len(blob), "sha256": sha256}}
-                        if not await self.ws_client.send(head):
-                            raise RuntimeError("QQ 文件上传通道已断开")
-                        for offset in range(0, len(blob), 96 * 1024):
-                            chunk = base64.b64encode(blob[offset:offset + 96 * 1024]).decode("ascii")
-                            if not await self.ws_client.send({"command": "fileUpload", "data": {
-                                    "phase": "chunk", "upload_id": upload_id, "content_base64": chunk}}):
-                                raise RuntimeError("QQ 文件上传中断")
-                        if not await self.ws_client.send({"command": "fileUpload", "data": {
-                                "phase": "finish", "upload_id": upload_id}}):
-                            raise RuntimeError("QQ 文件上传中断")
-                        uploaded.append(upload_id)
-                    metadata["file_upload_ids"] = uploaded
+                    await prepare_group_file_input(self, event, metadata)
                 except Exception as error:
-                    metadata["file_upload_error"] = str(error)[:180]
-            
-            # 创建等待响应的 Future
-            # 使用 request_id 作为 key，支持并发请求
+                    return {"content": f"文件接收失败：{str(error)[:180]}。", "images_base64": []}
+                if metadata.get("group_file_reply") and not metadata.get("has_text"):
+                    content = "请查看并概述我引用的文件。"
+
+            from .qq_file_upload import upload_input_files
+            await upload_input_files(self, metadata, request_id, qq_number, is_group)
+
             future = asyncio.Future()
             self.pending_requests[request_id] = future
             mode_future = asyncio.Future()
@@ -1010,10 +978,10 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             return
         if phase == "start":
             self.pending_file_sends = {key: item for key, item in self.pending_file_sends.items()
-                                       if time.monotonic() - item["created"] <= 120}
+                                       if time.monotonic() - item["created"] <= FILE_TRANSFER_TIMEOUT_SECONDS}
             filename = str(data.get("filename") or "")
             size = data.get("size")
-            if (not isinstance(size, int) or size < 0 or size > 8 * 1024 * 1024 or
+            if (not isinstance(size, int) or size < 0 or size > MAX_FILE_BYTES or
                     not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n") or
                     len(self.pending_file_sends) >= 4 or request_id in self.pending_file_sends):
                 return
@@ -1023,7 +991,7 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             return
         item = self.pending_file_sends.get(request_id)
         if phase == "chunk":
-            if not item or item["target"] != target or time.monotonic() - item["created"] > 120:
+            if not item or item["target"] != target or time.monotonic() - item["created"] > FILE_TRANSFER_TIMEOUT_SECONDS:
                 self.pending_file_sends.pop(request_id, None)
                 return
             encoded = data.get("content_base64")

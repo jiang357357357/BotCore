@@ -58,13 +58,15 @@ PUT  /api/devices/qq_bot/<ID>/automation/
 /QQ自动化 {"rules":[{"name":"group-agent","kind":"group_agent","enabled":true,"target_type":"group","target_id":"123456789","options":{"allow_actions":false}}]}
 ```
 
-群智能体仍只由本 Bot 的个人超级管理员通过 @、名字或关键词触发；群本身也必须获准访问。会话按 Bot、群、发言人分开保存，不使用私聊角色记忆。默认仅开放当前群的 QQ 查询；规则 `allow_actions:true` 额外授权当前群的修改操作，Core 每次重新检查当前策略。群会话不提供本地文件、命令执行、邮箱或跨会话查询工具，不在群中输出私聊审批详情。群帮助、进度和最终回复支持图片卡片，发送失败退回原群文字。
+群本身获准访问且开启智能体后，未被拉黑的群成员可通过 @、名字或关键词触发，无需逐人加入私聊白名单；切换群模式仍仅限本 Bot 的个人超级管理员。会话按 Bot、群、发言人分开保存，不使用私聊角色记忆。普通成员仅开放当前群的 QQ 查询；规则 `allow_actions:true` 额外授权个人超级管理员执行当前群的修改操作，不能把管理员权限授予普通成员。Core 每次调用重查当前策略、群准入及发言人黑名单，最终回复前也重查。群会话不提供本地文件、命令执行、邮箱或跨会话查询工具，不在群中输出私聊审批详情。群帮助、进度和最终回复支持图片卡片，发送失败退回原群文字。
+
+群文件收件流程：先在群里发文件，再回复该文件消息并 @机器人，可加分析要求；没有额外文字时默认概述文件。只上传文件不触发收件。BotCore 用 `get_msg` 校验原消息属于当前群，查询 Core `group_agent` 准入后才用 NapCat 下载缓存；单文件不超过 100 MB（100,000,000 字节）、每次最多 4 个。分块上传绑定本次请求、群、发言人、回复消息和引用原消息，Core 再核对。Agent 用 `qq-group-turn.v2` 接收本次附件，并只开放当前输入的 `read_attachment`；文本消息保留 v1 兼容。该功能不使用私聊附件暂存，也不会开放本地工作区文件或群文件发送工具。需要新版 Core、Agent 与 BotCore 配套运行，当前客户归档尚未更新。
 
 规则类型与 `options`：
 
 | kind | target_type | options 示例与行为 |
 | --- | --- | --- |
-| `poke_reply` | `user` / `group` | `{"mode":"static","message":"我在。"}` 固定回复；`{"mode":"agent"}` 唤醒智能体，触发人必须是本 Bot 的个人超级管理员，群内还须启用 `group_agent` |
+| `poke_reply` | `user` / `group` | `{"mode":"static","message":"我在。"}` 固定回复；`{"mode":"agent"}` 唤醒智能体，私聊触发人必须是本 Bot 的个人超级管理员，群内遵循已启用 `group_agent` 的群准入和成员黑名单 |
 | `welcome` | `group` | `{"message":"欢迎 {user_id} 加入 {group_id}。"}`，不会欢迎机器人自己 |
 | `friend_request` | `user` | `{"comment_equals":"约定备注"}` 仅批准该 QQ 且备注完全相符的申请；省略备注条件时仍只匹配指定 QQ |
 | `group_request` | `group` | `{"user_ids":["987654321"],"comment_equals":"约定备注"}`；必须列出允许的申请人／邀请人 |

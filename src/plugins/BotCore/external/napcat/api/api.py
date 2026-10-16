@@ -15,6 +15,7 @@ from nonebot.adapters.onebot.v11.exception import ActionFailed
 
 from src.plugins.BotCore.external.napcat.qzone import QzonePublishError, normalize_qzone_payload
 from src.plugins.BotCore.external.napcat.actions import NapCatActionsMixin
+from src.plugins.BotCore.external.napcat.file_limits import MAX_FILE_BYTES, MAX_IMAGE_BYTES, FILE_TRANSFER_TIMEOUT_SECONDS
 
 from src.System.Logs import get_logger
 
@@ -135,26 +136,29 @@ class NapCatAPI(NapCatActionsMixin):
         return {"message_id": str(message_id)}
 
     async def read_private_file(self, file_id: str, expected_size: int) -> bytes:
+        return await self.read_received_file(file_id, expected_size)
+
+    async def read_received_file(self, file_id: str, expected_size: int) -> bytes:
         """Fetch a received QQ file from NapCat's local cache with a strict size bound."""
-        if not self.bot or not file_id or expected_size < 0 or expected_size > 8 * 1024 * 1024:
-            raise ValueError("QQ 文件不可用或超过 8 MiB")
-        result = await self.bot.call_api("get_file", file_id=file_id)
+        if not self.bot or not file_id or expected_size < 0 or expected_size > MAX_FILE_BYTES:
+            raise ValueError("QQ 文件不可用或超过 100 MB")
+        result = await self.bot.call_api("get_file", file_id=file_id, _timeout=FILE_TRANSFER_TIMEOUT_SECONDS)
         location = self._read_mapping_or_attr(result, "file", "")
         if not isinstance(location, str) or not location:
             raise RuntimeError("NapCat 未返回文件路径")
         path = Path(location)
         stat = path.lstat()
-        if not path.is_file() or path.is_symlink() or stat.st_size > 8 * 1024 * 1024:
+        if not path.is_file() or path.is_symlink() or stat.st_size > MAX_FILE_BYTES:
             raise ValueError("QQ 文件不是受限的普通文件")
         with path.open("rb") as source:
-            data = source.read(8 * 1024 * 1024 + 1)
-        if len(data) > 8 * 1024 * 1024 or len(data) != expected_size:
+            data = source.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES or len(data) != expected_size:
             raise ValueError("QQ 文件大小与消息记录不符")
         return data
 
     async def read_private_image(self, image_file: str, expected_size: int = 0) -> tuple[bytes, str]:
         """Resolve a received image through NapCat and read its bounded local cache copy."""
-        if not self.bot or not image_file or expected_size < 0 or expected_size > 8 * 1024 * 1024:
+        if not self.bot or not image_file or expected_size < 0 or expected_size > MAX_IMAGE_BYTES:
             raise ValueError("QQ 图片不可用或超过 8 MiB")
         result = await self.bot.call_api("get_image", file=image_file)
         location = self._read_mapping_or_attr(result, "file", "")
@@ -162,11 +166,11 @@ class NapCatAPI(NapCatActionsMixin):
             raise RuntimeError("NapCat 未返回图片路径")
         path = Path(location)
         stat = path.lstat()
-        if not path.is_file() or path.is_symlink() or stat.st_size > 8 * 1024 * 1024:
+        if not path.is_file() or path.is_symlink() or stat.st_size > MAX_IMAGE_BYTES:
             raise ValueError("QQ 图片不是受限的普通文件")
         with path.open("rb") as source:
-            data = source.read(8 * 1024 * 1024 + 1)
-        if len(data) > 8 * 1024 * 1024 or (expected_size and len(data) != expected_size):
+            data = source.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES or (expected_size and len(data) != expected_size):
             raise ValueError("QQ 图片大小与消息记录不符")
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             extension = "png"
@@ -182,7 +186,7 @@ class NapCatAPI(NapCatActionsMixin):
 
     async def send_private_file(self, user_id: str, filename: str, content: bytes) -> Dict[str, Any]:
         """Upload a bounded local file through NapCat's file API."""
-        if not self.bot or not str(user_id).isdigit() or len(content) > 8 * 1024 * 1024:
+        if not self.bot or not str(user_id).isdigit() or len(content) > MAX_FILE_BYTES:
             raise ValueError("QQ 文件目标或大小无效")
         if not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n"):
             raise ValueError("QQ 文件名无效")
@@ -192,7 +196,8 @@ class NapCatAPI(NapCatActionsMixin):
             temp.write(content)
             local_path = temp.name
         try:
-            result = await self.bot.call_api("upload_private_file", user_id=str(user_id), file=local_path, name=filename)
+            result = await self.bot.call_api("upload_private_file", user_id=str(user_id), file=local_path, name=filename,
+                                             _timeout=FILE_TRANSFER_TIMEOUT_SECONDS)
             return {"file_id": str(self._read_mapping_or_attr(result, "file_id", "") or ""),
                     "sha256": hashlib.sha256(content).hexdigest()}
         finally:

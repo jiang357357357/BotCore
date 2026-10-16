@@ -1,6 +1,6 @@
 [project]
 name = "BotCore"
-version = "1.11.5"
+version = "1.11.7"
 description = "BotCore"
 readme = "README.md"
 requires-python = ">=3.9, <4.0"
