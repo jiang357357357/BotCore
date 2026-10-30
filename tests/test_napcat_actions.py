@@ -175,6 +175,30 @@ class ExecutorTests(unittest.IsolatedAsyncioTestCase):
         await runner.execute_action("set_qq_avatar_inline", {"image_base64": encoded})
         runner.bot.call_api.assert_awaited_once_with("set_qq_avatar", file="base64://" + encoded, _timeout=45.0)
 
+    async def test_inline_stickers_use_fixed_message_api_and_preserve_gif_bytes(self):
+        encoded = base64.b64encode(b"GIF89a-sticker-fixture").decode("ascii")
+        for action, target, upstream in [("send_private_sticker", "user_id", "send_private_msg"),
+                                          ("send_group_sticker", "group_id", "send_group_msg")]:
+            runner = self.create_runner({"message_id": "77"})
+            result = await runner.execute_action(action, {target: "234567", "image_base64": encoded})
+            runner.bot.call_api.assert_awaited_once_with(upstream, **{target: "234567", "message": [
+                {"type": "image", "data": {"file": "base64://" + encoded}}]}, _timeout=45.0)
+            self.assertEqual(result["message_id"], "77")
+            self.assertIn(action, runner.SERIALIZED_SEND_ACTIONS)
+
+    async def test_invalid_inline_sticker_never_calls_upstream(self):
+        runner = self.create_runner()
+        with self.assertRaises(actions.NapCatActionError):
+            await runner.execute_action("send_private_sticker", {"user_id": "234567", "image_base64": base64.b64encode(b"not-image").decode()})
+        runner.bot.call_api.assert_not_awaited()
+
+    async def test_inline_sticker_without_message_receipt_stays_unknown_and_is_not_retried(self):
+        runner = self.create_runner({})
+        with self.assertRaises(actions.NapCatActionError) as error:
+            await runner.execute_action("send_private_sticker", {"user_id": "234567", "image_base64": base64.b64encode(b"GIF89a-fixture").decode()})
+        self.assertEqual(error.exception.status, "unknown")
+        runner.bot.call_api.assert_awaited_once()
+
     async def test_large_media_result_keeps_metadata_instead_of_breaking_bridge_ack(self):
         runner = self.create_runner({"file": "cached.wav", "url": "cached.wav", "file_size": "400000", "base64": "a" * (384 * 1024 + 1)})
         result = await runner.execute_action("get_record", {"source_message_id": 1, "file_id": "record"})

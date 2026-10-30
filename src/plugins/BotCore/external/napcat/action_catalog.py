@@ -82,6 +82,12 @@ for action, target in [("send_private_msg", "user"), ("send_group_msg", "group")
     add(action, "发送受限消息段（文字、图片、语音、视频、引用、表情、@）", True, target, "msg/SendMsg",
         {field: ID, "message": {"type": "array", "format": "message_segments", "minItems": 1, "maxItems": 40}},
         (field, "message"))
+for action, target, upstream in [("send_private_sticker", "user", "send_private_msg"),
+                                  ("send_group_sticker", "group", "send_group_msg")]:
+    field = target + "_id"
+    add(action, "发送内联PNG/JPEG/GIF/WebP表情包（解码后最多10MiB）", True, target, "msg/SendMsg",
+        {field: ID, "image_base64": text(13981016, 1, format="inline_sticker_image")},
+        (field, "image_base64"), bridge_dispatch="inline_sticker", upstream_actions=[upstream])
 for action, target in [("send_private_forward_msg", "user"), ("send_group_forward_msg", "group")]:
     field = target + "_id"
     add(action, "发送受限合并转发节点", True, target, "go-cqhttp/SendForwardMsg",
@@ -455,15 +461,19 @@ def _value(value, schema):
             raise ActionValidationError("标识含无效控制字符")
         elif fmt == "plain_text" and (value.lstrip().startswith(("{", "[", "<")) or "[CQ:" in value or re.search(r"(?i)(?:file|base64)://|[a-z]:[/\\]", value)):
             raise ActionValidationError("收藏只接受纯文本，不接受结构化代码或本地路径")
-        elif fmt == "inline_image":
+        elif fmt in {"inline_image", "inline_sticker_image"}:
             try:
                 decoded = base64.b64decode(value, validate=True)
             except (ValueError, binascii.Error):
-                raise ActionValidationError("头像必须是有效的标准Base64") from None
+                raise ActionValidationError("图片必须是有效的标准Base64") from None
             valid_image = decoded.startswith(b"\x89PNG\r\n\x1a\n") or decoded.startswith(b"\xff\xd8\xff") or (
                 len(decoded) >= 12 and decoded[:4] == b"RIFF" and decoded[8:12] == b"WEBP")
-            if not valid_image or len(decoded) > 1024 * 1024:
-                raise ActionValidationError("头像仅支持PNG/JPEG/WebP，解码后最多1MiB")
+            if fmt == "inline_sticker_image":
+                valid_image = valid_image or decoded.startswith((b"GIF87a", b"GIF89a"))
+            maximum = 10 * 1024 * 1024 if fmt == "inline_sticker_image" else 1024 * 1024
+            if not valid_image or len(decoded) > maximum or base64.b64encode(decoded).decode("ascii") != value:
+                raise ActionValidationError("表情包仅支持PNG/JPEG/GIF/WebP，解码后最多10MiB" if fmt == "inline_sticker_image"
+                                            else "头像仅支持PNG/JPEG/WebP，解码后最多1MiB")
     elif kind == "array":
         if fmt in {"message_segments", "forward_nodes"}: return _segments(value, nodes=fmt == "forward_nodes")
         if fmt == "staged_files":

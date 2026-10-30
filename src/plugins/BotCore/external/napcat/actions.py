@@ -30,6 +30,7 @@ class NapCatActionsMixin:
     STAGING_RETENTION_SECONDS = 24 * 60 * 60
     MAX_STAGED_FILE_BYTES = 8 * 1024 * 1024
     SERIALIZED_SEND_ACTIONS = frozenset({
+        "send_private_sticker", "send_group_sticker",
         "send_private_msg", "send_group_msg", "send_private_forward_msg", "send_group_forward_msg",
         "send_group_ai_record", "send_online_file", "send_flash_msg", "upload_private_file", "upload_group_file",
         "send_online_folder", "forward_friend_single_msg", "forward_group_single_msg",
@@ -79,7 +80,7 @@ class NapCatActionsMixin:
         except Exception as error:
             status = "unknown" if entry["mutating"] else "failed"
             raise NapCatActionError("NapCat 调用超时或连接异常，请核实结果后再操作", "DELIVERY_UNKNOWN" if entry["mutating"] else "READ_FAILED", status) from error
-        expected_id = "message_id" if action in {"send_private_msg", "send_group_msg", "send_private_forward_msg", "send_group_forward_msg", "send_contact_card", "send_miniapp_card"} else "msgId" if action in {"send_online_file", "send_online_folder"} else "tid" if action == "send_qzone_msg" else None
+        expected_id = "message_id" if action in {"send_private_msg", "send_group_msg", "send_private_sticker", "send_group_sticker", "send_private_forward_msg", "send_group_forward_msg", "send_contact_card", "send_miniapp_card"} else "msgId" if action in {"send_online_file", "send_online_folder"} else "tid" if action == "send_qzone_msg" else None
         if expected_id:
             message_id = result.get(expected_id) if isinstance(result, dict) else None
             if (isinstance(message_id, bool) or not isinstance(message_id, (str, int)) or not str(message_id).strip()
@@ -127,6 +128,10 @@ class NapCatActionsMixin:
         dispatch = entry.get("bridge_dispatch")
         if dispatch == "inline_avatar":
             return await self.bot.call_api("set_qq_avatar", file="base64://" + payload["image_base64"], _timeout=self.ACTION_TIMEOUT)
+        if dispatch == "inline_sticker":
+            field, upstream = ("group_id", "send_group_msg") if "group_id" in payload else ("user_id", "send_private_msg")
+            return await self._call_catalog_action(upstream, {field: payload[field],
+                "message": [{"type": "image", "data": {"file": "base64://" + payload["image_base64"]}}]}, ACTION_CATALOG[upstream])
         if dispatch not in {"contact_card", "miniapp_card"}:
             return await self._call_catalog_action(action, payload, entry)
         # Read/generate phase has no sending side effect. Keep errors known failed

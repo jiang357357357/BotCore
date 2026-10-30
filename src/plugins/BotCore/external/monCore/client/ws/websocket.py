@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 class WebSocketClient:
     """WebSocket 客户端类"""
     
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, *, device_id: str = "", device_credential: str = ""):
         """
         初始化 WebSocket 客户端
         
@@ -26,6 +26,9 @@ class WebSocketClient:
             server_url: 服务器 WebSocket URL
         """
         self.server_url = server_url
+        self._device_headers = ({"X-Mon-Device-ID": device_id, "X-Mon-Device-Credential": device_credential}
+                                if device_id and device_credential else {})
+        self.superseded = False
         self.websocket = None
         self._connected_event = asyncio.Event()
         self._registered_event = asyncio.Event()
@@ -38,6 +41,7 @@ class WebSocketClient:
         self.enable_reconnect = True
         self.reconnect_callbacks: list[Callable] = []
         self.reconnect_failed_callbacks: list[Callable[[int], Any]] = []
+        self.disconnect_callbacks: list[Callable[[bool], Any]] = []
         self._receive_task: Optional[asyncio.Task] = None
     
     @property
@@ -70,9 +74,14 @@ class WebSocketClient:
             连接是否成功
         """
         try:
+            if self.superseded:
+                return False
             logger.info(f"正在连接到 WebSocket 服务器: {self.server_url}")
             self.qq_command_protocol = 0
-            self.websocket = await connect(self.server_url, max_size=8 * 1024 * 1024)
+            options = {"max_size": 16 * 1024 * 1024}
+            if self._device_headers:
+                options["extra_headers"] = self._device_headers
+            self.websocket = await connect(self.server_url, **options)
             self.is_connected = True
             logger.info("WebSocket 连接成功")
             
@@ -535,8 +544,14 @@ class WebSocketClient:
                     # 处理消息
                     await self._handle_message(message)
                     
-                except ConnectionClosed:
-                    logger.warning("WebSocket 连接已关闭")
+                except ConnectionClosed as error:
+                    if error.rcvd is not None and error.rcvd.code == 4409:
+                        self.superseded = True
+                        self.enable_reconnect = False
+                        self.is_registered = False
+                        logger.warning("QQBot 连接已由另一个实例接管；本实例停止重连，请通过 MonPM 检查重复进程")
+                    else:
+                        logger.warning("WebSocket 连接已关闭")
                     self.is_connected = False
                     break
                 except json.JSONDecodeError as e:
@@ -548,6 +563,11 @@ class WebSocketClient:
             logger.error(f"消息接收循环出错: {e}")
             self.is_connected = False
         
+        for callback in self.disconnect_callbacks:
+            try:
+                await callback(self.superseded)
+            except Exception:
+                logger.error("QQBot 断开状态通知失败")
         # 连接断开后尝试重连（仅对已注册的专用通道进行重连）
         if self.is_registered and self.enable_reconnect:
             logger.info("检测到连接断开，启动自动重连...")
@@ -689,9 +709,11 @@ class WebSocketClient:
         max_retries = int(os.getenv("MONCORE_WS_RECONNECT_MAX_RETRIES", "6"))
         retry_count = 0
         
-        while not self.is_connected:
+        while not self.is_connected and self.enable_reconnect and not self.superseded:
             logger.info(f"等待 {self.reconnect_interval} 秒后尝试重连... (尝试次数: {retry_count + 1})")
             await asyncio.sleep(self.reconnect_interval)
+            if not self.enable_reconnect or self.superseded:
+                break
             
             try:
                 # 重连前清理旧连接

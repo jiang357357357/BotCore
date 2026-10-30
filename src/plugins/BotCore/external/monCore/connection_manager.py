@@ -314,7 +314,9 @@ class ConnectionManager:
         self.bot_url = bot_url
         
         # 创建新的 WebSocket 客户端
-        self.ws_client = WebSocketClient(bot_url)
+        self.ws_client = WebSocketClient(bot_url, device_id=self.credential_store.device_id(),
+                                        device_credential=self.credential_store.device_credential() or "")
+        self.ws_client.disconnect_callbacks.append(self._on_channel_disconnected)
         
         # 注册映射更新处理器
         self.ws_client.register_handler("mappingHost", self.callback_handler.handle_mapping_update)
@@ -329,7 +331,7 @@ class ConnectionManager:
         # 连接
         success = await self.ws_client.connect()
         
-        if success:
+        if success and self.ws_client.is_connected and not self.ws_client.superseded:
             logger.info("机器人专用通道连接成功")
             self.is_connected = True
             # 标记为已注册（专用通道连接成功即表示已注册）
@@ -338,8 +340,17 @@ class ConnectionManager:
         else:
             logger.error("机器人专用通道连接失败")
             self.is_connected = False
+            success = False
         
         return success
+
+    async def _on_channel_disconnected(self, superseded: bool):
+        self.is_connected = False
+        if superseded:
+            self.is_registered = False
+            if self._recovery_task and not self._recovery_task.done():
+                self._recovery_task.cancel()
+                self._recovery_task = None
     
     async def _on_reconnect(self):
         """
@@ -348,7 +359,7 @@ class ConnectionManager:
         """
         logger.info("重连成功，重新注册消息处理器...")
         
-        if self.ws_client:
+        if self.ws_client and self.ws_client.is_connected and not self.ws_client.superseded:
             # 重新注册映射更新处理器
             self.ws_client.register_handler("mappingHost", self.callback_handler.handle_mapping_update)
             
@@ -382,6 +393,8 @@ class ConnectionManager:
         MonCore 服务重启后，旧 bot_url 可能永久失效；这时必须
         放弃旧通道，重新连接固定本机登录端点并注册。
         """
+        if self.ws_client and self.ws_client.superseded:
+            return
         logger.warning(f"专用 bot 通道连续重连失败 {retry_count} 次，准备重新发现 MonCore 并注册")
 
         self.is_connected = False
@@ -419,7 +432,7 @@ class ConnectionManager:
 
     def schedule_registration_recovery(self) -> None:
         """确保首次注册失败后持续重试，并在令牌写入后自动完成注册。"""
-        if self.is_registered:
+        if self.is_registered or (self.ws_client and self.ws_client.superseded):
             return
         if self._recovery_task and not self._recovery_task.done():
             return
@@ -433,6 +446,8 @@ class ConnectionManager:
         Returns:
             连接和注册是否成功
         """
+        if self.ws_client and self.ws_client.superseded:
+            return False
         try:
             logger.info("开始 MonCore 连接流程...")
             

@@ -1,5 +1,15 @@
 # MonBot
 
+## QQBot 连接归属与配套更新
+
+Core 与 BotCore 的专用 WebSocket 连接协议为 2。BotCore 在握手请求头中提供既有设备标识和凭证，不放入 URL；登录注册和首次配对流程保持原入口。Core 以数据库中的当前通道为准，已认证的新连接接管旧连接；旧连接不能再收发业务、更新 QQ 在线状态或在退出时将新连接置离线。
+
+旧实例收到 `4409` 后停止自动重连及重新注册，结束自己的待回复等待，不额外发送超时提示。普通网络断线继续恢复；已发出的消息若等待确认超时，保留结果未知，不转广播或自动重发。排障日志包含 `bot_id`、`connection_id` 和相关 `request_id`，不记录握手凭证。
+
+此改动必须配套更新 Core 和 BotCore。源码部署在停止目标服务后，从 `Core` 目录使用自己的虚拟环境运行 `manage.py migrate --noinput`，应用 `0028_qqbot_active_ws_channel` 后再启动配套服务；旧 BotCore 缺少握手凭证会被拒绝。Windows 便携客户须通过包含配套组件和迁移步骤的完整客户包更新，不直接覆盖源码文件。本次源码修复不代表现有客户包已经更新。
+
+隔离验证入口：从 `Core` 运行 `.venv/Scripts/python.exe Application/Domain/BOT/tests/run_napcat_contracts.py`；从 `DLC/BotLauncher` 运行 `.venv/Scripts/python.exe BotCore/tests/run_contracts.py`。测试使用独立内存数据库、临时凭证与本机随机端口，不连接真实 QQ；真实 WebSocket 联调需要工作区中的 Core 虚拟环境。
+
 ## NapCat 扩展能力
 
 扩展清单按 NapCat **v4.18.28** 源码核对，实际可执行能力取决于安装版本与 QQ 账号权限。需同步更新 BotCore、MonCore；智能体调用还需更新 AgentServer。此功能不自动升级 NapCat。

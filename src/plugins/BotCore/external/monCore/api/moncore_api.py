@@ -61,6 +61,19 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
 
     def register_ws_handlers(self):
         """注册 MonCore 下发消息处理器。重连替换 ws_client 后需要再次调用。"""
+        callbacks = getattr(self.ws_client, "disconnect_callbacks", None)
+        previous = getattr(self, "_disconnect_binding", None)
+        if isinstance(callbacks, list) and (previous is None or previous[0] is not self.ws_client):
+            if previous and previous[1] in previous[0].disconnect_callbacks:
+                previous[0].disconnect_callbacks.remove(previous[1])
+            client = self.ws_client
+
+            async def disconnected(superseded):
+                if self.ws_client is client:
+                    await self._handle_connection_lost(superseded)
+
+            callbacks.append(disconnected)
+            self._disconnect_binding = (client, disconnected)
         self.ws_client.register_handler("reply", self._handle_reply)
         self.ws_client.register_handler("chat", self._handle_chat_processing)
         self.ws_client.register_handler("error", self._handle_error)
@@ -286,9 +299,14 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
     def _extract_file_metadata(message) -> list[Dict[str, Any]]:
         files = []
         for segment in message:
-            if segment.type != "file":
+            if segment.type not in {"file", "video"}:
                 continue
             data = dict(getattr(segment, "data", {}) or {})
+            if segment.type == "video":
+                files.append({"file_id": str(data.get("file_id") or data.get("file") or ""),
+                              "filename": f"qq-video-{len(files) + 1}.mp4",
+                              "file_size": data.get("file_size") or 0, "media_kind": "video"})
+                continue
             files.append({"file_id": str(data.get("file_id") or ""),
                           "filename": str(data.get("file") or ""),
                           "file_size": data.get("file_size")})
@@ -725,6 +743,16 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
         self.reply_callbacks.append(callback)
         logger.debug(f"已注册回复回调函数: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
     
+    async def _handle_connection_lost(self, superseded: bool):
+        if not superseded:
+            return
+        # A displaced process must neither wait 30 minutes nor send another QQ
+        # notice. The accepted task can still be inspected in the Agent session.
+        for future in list(self.pending_requests.values()):
+            if not future.done():
+                future.set_result({"content": "", "audio_url": None, "images_base64": [],
+                                   "error_code": "CONNECTION_REPLACED"})
+
     async def _handle_chat_processing(self, message: Dict[str, Any]):
         """Core 告知本轮走普通聊天还是 Agent，以便选用对应等待时间。"""
         if message.get("subCommand") != "processing":

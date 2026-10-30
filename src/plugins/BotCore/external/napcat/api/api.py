@@ -156,6 +156,11 @@ class NapCatAPI(NapCatActionsMixin):
             raise ValueError("QQ 文件大小与消息记录不符")
         return data
 
+    async def read_received_video(self, file_id: str, expected_size: int = 0) -> tuple[bytes, str]:
+        """Read only the NapCat-resolved local copy of a message's video."""
+        from .video_input import read_received_video
+        return await read_received_video(self, file_id, expected_size)
+
     async def read_private_image(self, image_file: str, expected_size: int = 0) -> tuple[bytes, str]:
         """Resolve a received image through NapCat and read its bounded local cache copy."""
         if not self.bot or not image_file or expected_size < 0 or expected_size > MAX_IMAGE_BYTES:

@@ -28,9 +28,19 @@ async def prepare_group_file_input(core, event, metadata):
         raise ValueError("NapCat 未返回可读取的引用消息")
     files = []
     for segment in segments:
-        if not isinstance(segment, dict) or segment.get("type") != "file":
+        if not isinstance(segment, dict) or segment.get("type") not in {"file", "video"}:
             continue
         data = segment.get("data") or {}
+        if segment.get("type") == "video":
+            file_id = str(data.get("file_id") or data.get("file") or "")
+            size = data.get("file_size") or 0
+            if isinstance(size, str) and size.isascii() and size.isdigit():
+                size = int(size)
+            if not file_id or type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
+                raise ValueError("引用视频信息无效或超过 100 MB")
+            files.append({"file_id": file_id, "filename": f"qq-video-{len(files) + 1}.mp4",
+                          "file_size": size, "media_kind": "video"})
+            continue
         filename = str(data.get("file") or data.get("name") or "")
         file_id = str(data.get("file_id") or "")
         size = data.get("file_size")
