@@ -98,3 +98,37 @@ class QqFileDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await api._handle_file_send({**context, "file_phase": "chunk", "content_base64": "YQ=="})
         await api._handle_file_send({**context, "file_phase": "finish"})
         self.assertEqual(api._send_message_host_ack.call_args.args[0], "error")
+
+    async def test_group_file_transport_preserves_target_type_and_uses_group_upload(self):
+        api = self.file_api()
+        content = b"group file"
+        napcat = SimpleNamespace(send_group_file=AsyncMock(return_value={"file_id": "group-fixture"}))
+        context = {"request_id": "qq_file_group", "target_type": "group", "target_qq_number": "333333"}
+        await api._handle_file_send({**context, "file_phase": "start", "filename": "group.txt",
+            "size": len(content), "sha256": hashlib.sha256(content).hexdigest()})
+        # Equal numeric targets in different conversation types must not share an upload.
+        await api._handle_file_send({**context, "target_type": "user", "file_phase": "finish"})
+        napcat.send_group_file.assert_not_awaited()
+        self.assertEqual(api._send_message_host_ack.call_args.args[0], "error")
+        await api._handle_file_send({**context, "file_phase": "start", "filename": "group.txt",
+            "size": len(content), "sha256": hashlib.sha256(content).hexdigest()})
+        await api._handle_file_send({**context, "file_phase": "chunk", "content_base64": base64.b64encode(content).decode()})
+        with patch.dict(sys.modules, {"src.plugins.BotCore.app": SimpleNamespace(napcat_api=napcat)}):
+            await api._handle_file_send({**context, "file_phase": "finish"})
+        napcat.send_group_file.assert_awaited_once_with("333333", "group.txt", content)
+        self.assertEqual(api._send_message_host_ack.call_args.args[1]["api"], "upload_group_file")
+
+    async def test_group_napcat_upload_sends_exact_bytes_and_removes_temporary_file(self):
+        api = NapCatAPI()
+        temporary = []
+
+        async def upload(action, **fields):
+            self.assertEqual(action, "upload_group_file")
+            self.assertEqual(fields["group_id"], "333333")
+            temporary.append(Path(fields["file"]))
+            self.assertEqual(temporary[-1].read_bytes(), b"group bytes")
+            return {"file_id": "group-file"}
+
+        api.bot = SimpleNamespace(call_api=AsyncMock(side_effect=upload))
+        self.assertEqual((await api.send_group_file("333333", "group.txt", b"group bytes"))["file_id"], "group-file")
+        self.assertTrue(temporary and all(not path.exists() for path in temporary))

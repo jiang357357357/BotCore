@@ -1002,7 +1002,8 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
         request_id = str(data.get("request_id") or "")
         phase = data.get("file_phase")
         target = str(data.get("target_qq_number") or "")
-        if not request_id.startswith("qq_file_") or not target.isdigit() or data.get("target_type") != "user":
+        target_type = data.get("target_type")
+        if not request_id.startswith("qq_file_") or not target.isdigit() or target_type not in {"user", "group"}:
             return
         if phase == "start":
             self.pending_file_sends = {key: item for key, item in self.pending_file_sends.items()
@@ -1013,13 +1014,14 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
                     not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n") or
                     len(self.pending_file_sends) >= 4 or request_id in self.pending_file_sends):
                 return
-            self.pending_file_sends[request_id] = {"target": target, "filename": filename,
+            self.pending_file_sends[request_id] = {"target": target, "target_type": target_type, "filename": filename,
                 "size": size, "sha256": str(data.get("sha256") or ""),
                 "length": 0, "chunks": [], "created": time.monotonic()}
             return
         item = self.pending_file_sends.get(request_id)
         if phase == "chunk":
-            if not item or item["target"] != target or time.monotonic() - item["created"] > FILE_TRANSFER_TIMEOUT_SECONDS:
+            if (not item or item["target"] != target or item["target_type"] != target_type
+                    or time.monotonic() - item["created"] > FILE_TRANSFER_TIMEOUT_SECONDS):
                 self.pending_file_sends.pop(request_id, None)
                 return
             encoded = data.get("content_base64")
@@ -1040,7 +1042,7 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             return
         item = self.pending_file_sends.pop(request_id, None)
         try:
-            if not item or item["target"] != target:
+            if not item or item["target"] != target or item["target_type"] != target_type:
                 raise RuntimeError("QQ 文件传输不完整")
             content = b"".join(item["chunks"])
             if len(content) != item["size"] or hashlib.sha256(content).hexdigest() != item["sha256"]:
@@ -1048,14 +1050,15 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             from src.plugins.BotCore.app import napcat_api
             if not napcat_api:
                 raise RuntimeError("NapCat 未连接")
-            result = await napcat_api.send_private_file(target, item["filename"], content)
+            sender = napcat_api.send_group_file if target_type == "group" else napcat_api.send_private_file
+            result = await sender(target, item["filename"], content)
             await self._send_message_host_ack("success", {"request_id": request_id,
-                "target_type": "user", "target_qq_number": target, "status": "sent",
-                "api": "upload_private_file", "file_id": result.get("file_id") or ""})
+                "target_type": target_type, "target_qq_number": target, "status": "sent",
+                "api": "upload_group_file" if target_type == "group" else "upload_private_file", "file_id": result.get("file_id") or ""})
         except Exception as error:
             logger.error("QQ 文件发送失败: request_id=%s error=%s", request_id, error)
             await self._send_message_host_ack("error", {"request_id": request_id,
-                "target_type": "user", "target_qq_number": target,
+                "target_type": target_type, "target_qq_number": target,
                 "status": "failed", "message": str(error)[:180]})
     
     async def _handle_store_response(self, message: Dict[str, Any]):

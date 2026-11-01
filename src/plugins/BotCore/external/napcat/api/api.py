@@ -190,8 +190,14 @@ class NapCatAPI(NapCatActionsMixin):
         return data, extension
 
     async def send_private_file(self, user_id: str, filename: str, content: bytes) -> Dict[str, Any]:
+        return await self._send_file("user", user_id, filename, content)
+
+    async def send_group_file(self, group_id: str, filename: str, content: bytes) -> Dict[str, Any]:
+        return await self._send_file("group", group_id, filename, content)
+
+    async def _send_file(self, target_type: str, target_id: str, filename: str, content: bytes) -> Dict[str, Any]:
         """Upload a bounded local file through NapCat's file API."""
-        if not self.bot or not str(user_id).isdigit() or len(content) > MAX_FILE_BYTES:
+        if not self.bot or not str(target_id).isdigit() or len(content) > MAX_FILE_BYTES:
             raise ValueError("QQ 文件目标或大小无效")
         if not filename or len(filename) > 255 or any(c in filename for c in "/\\\x00\r\n"):
             raise ValueError("QQ 文件名无效")
@@ -201,7 +207,9 @@ class NapCatAPI(NapCatActionsMixin):
             temp.write(content)
             local_path = temp.name
         try:
-            result = await self.bot.call_api("upload_private_file", user_id=str(user_id), file=local_path, name=filename,
+            api = "upload_group_file" if target_type == "group" else "upload_private_file"
+            destination = {"group_id" if target_type == "group" else "user_id": str(target_id)}
+            result = await self.bot.call_api(api, **destination, file=local_path, name=filename,
                                              _timeout=FILE_TRANSFER_TIMEOUT_SECONDS)
             return {"file_id": str(self._read_mapping_or_attr(result, "file_id", "") or ""),
                     "sha256": hashlib.sha256(content).hexdigest()}

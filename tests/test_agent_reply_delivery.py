@@ -164,12 +164,36 @@ class AgentReplyDeliveryTests(unittest.IsolatedAsyncioTestCase):
         callback.assert_not_awaited()
 
     async def test_late_agent_notice_does_not_restart_the_unknown_mode_deadline(self):
-        with patch.object(MonCoreAPI, "AGENT_REPLY_TIMEOUT", 0.2):
+        # Check the remaining deadline directly: a 140 ms wall-clock assertion
+        # flakes when Windows schedules other release verification processes.
+        clock = 0.0
+        intervals = []
+        loop = Mock(wraps=asyncio.get_running_loop())
+        loop.time.side_effect = lambda: clock
+
+        async def advance(waiting, *, timeout, return_when):
+            nonlocal clock
+            intervals.append(timeout)
+            if len(intervals) == 1:
+                clock = 0.02  # Mode-detection grace elapsed.
+                return set(), waiting
+            if len(intervals) == 2:
+                clock = 0.15
+                request_id = next(iter(self.api.pending_chat_modes))
+                await self.processing(request_id)  # Use the actual WS dispatcher.
+                return {self.api.pending_chat_modes[request_id]}, set()
+            return set(), waiting
+
+        with patch.object(MonCoreAPI, 'AGENT_REPLY_TIMEOUT', 0.2), \
+                patch('asyncio.get_running_loop', return_value=loop), \
+                patch('asyncio.wait', side_effect=advance):
             waiting, request_id = await self.start_request(timeout=0.01)
-            await asyncio.sleep(0.13)
-            await self.processing(request_id)
-            result = await asyncio.wait_for(waiting, 0.14)
+            result = await waiting
         self.assertEqual(result["error_code"], "REPLY_TIMEOUT")
+        self.assertEqual(len(intervals), 3)
+        self.assertAlmostEqual(intervals[0], 0.02)
+        self.assertAlmostEqual(intervals[1], 0.2)
+        self.assertAlmostEqual(intervals[2], 0.07)  # Original 0.22 deadline, not 0.35.
         self.assert_no_pending_requests()
 
     async def test_cancellation_removes_reply_and_mode_futures(self):
