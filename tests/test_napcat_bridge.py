@@ -94,6 +94,25 @@ class NapCatBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NapCatInputTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_text_quote_keeps_current_and_quoted_speakers_and_body(self):
+        message = Message([MessageSegment.reply(400), MessageSegment.text("那这个呢")])
+        quote = SimpleNamespace(message_id=400, real_id=400, message_type="group",
+            sender=SimpleNamespace(user_id=200001, card="A", nickname="A"), message=Message("预算五百"))
+        event = GroupMessageEvent.model_construct(self_id=100001, group_id=300001, user_id=200002,
+            message_id=401, message=message, original_message=message, reply=quote, to_me=True,
+            sender=SimpleNamespace(card="B", nickname="B"))
+        content = await MonCoreAPI._extract_event_content(event)
+        with patch("src.plugins.BotCore.core.router.message_handlers._is_keyword_trigger", return_value=True):
+            metadata = await MonCoreAPI._build_event_metadata(event, content)
+        self.assertEqual(content, "那这个呢")
+        self.assertEqual(metadata["group_id"], "300001")
+        self.assertEqual(metadata["sender_user_id"], "200002")
+        self.assertEqual(metadata["sender_nickname"], "B")
+        self.assertEqual(metadata["reply_to"]["message_id"], "400")
+        self.assertEqual(metadata["reply_to"]["sender_user_id"], "200001")
+        self.assertEqual(metadata["reply_to"]["content"], "预算五百")
+        self.assertTrue(metadata["group_agent_trigger"])
+
     async def test_voice_and_forward_expanded_once_for_store_and_chat(self):
         message = Message([MessageSegment.record("ignored"), MessageSegment("forward", {"id": "forward-a"})])
         event = event_for(message)

@@ -1,10 +1,22 @@
 """Bound received files to this exact chat request before sending small WS frames."""
 
 import base64
+import asyncio
 import hashlib
+import logging
 import secrets
 
 from src.plugins.BotCore.external.napcat.file_limits import MAX_FILE_BYTES, MAX_IMAGE_BYTES
+
+logger = logging.getLogger(__name__)
+
+
+async def _read_file_with_retry(read, *args):
+    try:
+        return await read(*args)
+    except (TimeoutError, ConnectionError, OSError):
+        await asyncio.sleep(0.2)
+        return await read(*args)
 
 
 async def upload_input_files(core, metadata, request_id, qq_number, is_group):
@@ -29,11 +41,11 @@ async def upload_input_files(core, metadata, request_id, qq_number, is_group):
                 if not filename or not file_id or size < 0 or size > MAX_FILE_BYTES:
                     raise ValueError("文件信息无效或单文件超过 100 MB")
                 if item.get("media_kind") == "video":
-                    blob, extension = await napcat_api.read_received_video(file_id, size)
+                    blob, extension = await _read_file_with_retry(napcat_api.read_received_video, file_id, size)
                     filename = f"qq-video-{index}.{extension}"
                 else:
-                    blob = await (napcat_api.read_received_file(file_id, size) if is_group
-                                  else napcat_api.read_private_file(file_id, size))
+                    reader = napcat_api.read_received_file if is_group else napcat_api.read_private_file
+                    blob = await _read_file_with_retry(reader, file_id, size)
             else:
                 image_file = str(item.get("file") or "")
                 if is_group or not image_file or size < 0 or size > MAX_IMAGE_BYTES:
@@ -59,4 +71,5 @@ async def upload_input_files(core, metadata, request_id, qq_number, is_group):
             uploaded.append(upload_id)
         metadata["file_upload_ids"] = uploaded
     except Exception as error:
-        metadata["file_upload_error"] = str(error)[:180]
+        metadata["file_upload_error"] = (str(error) or type(error).__name__)[:180]
+        logger.warning("QQ 文件接收失败: %s: %s", type(error).__name__, metadata["file_upload_error"])

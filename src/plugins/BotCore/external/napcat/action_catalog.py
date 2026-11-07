@@ -19,6 +19,20 @@ class ActionValidationError(ValueError):
         self.code = code
 
 
+def validate_inline_audio(value):
+    if not isinstance(value, str) or not 1 <= len(value) <= 13981016:
+        raise ActionValidationError("语音载荷无效，解码后最多10MiB")
+    try:
+        audio = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        raise ActionValidationError("语音必须为有效base64") from None
+    valid = ((audio.startswith(b"RIFF") and audio[8:12] == b"WAVE") or audio.startswith((b"ID3", b"OggS", b"fLaC"))
+             or len(audio) > 2 and audio[0] == 255 and audio[1] & 0xE0 == 0xE0)
+    if not valid or len(audio) > 10 * 1024 * 1024 or base64.b64encode(audio).decode("ascii") != value:
+        raise ActionValidationError("语音仅支持WAV/MP3/OGG/FLAC，解码后最多10MiB")
+    return value
+
+
 def text(limit=2000, minimum=0, **extra):
     return {"type": "string", "minLength": minimum, "maxLength": limit, **extra}
 
@@ -88,6 +102,9 @@ for action, target, upstream in [("send_private_sticker", "user", "send_private_
     add(action, "发送内联PNG/JPEG/GIF/WebP表情包（解码后最多10MiB）", True, target, "msg/SendMsg",
         {field: ID, "image_base64": text(13981016, 1, format="inline_sticker_image")},
         (field, "image_base64"), bridge_dispatch="inline_sticker", upstream_actions=[upstream])
+add("send_group_voice", "发送已合成语音（WAV/MP3/OGG/FLAC，解码后最多10MiB）", True, "group", "msg/SendMsg",
+    {"group_id": ID, "audio_base64": text(13981016, 1, format="inline_audio")},
+    ("group_id", "audio_base64"), bridge_dispatch="inline_voice", upstream_actions=["send_group_msg"])
 for action, target in [("send_private_forward_msg", "user"), ("send_group_forward_msg", "group")]:
     field = target + "_id"
     add(action, "发送受限合并转发节点", True, target, "go-cqhttp/SendForwardMsg",
@@ -461,6 +478,8 @@ def _value(value, schema):
             raise ActionValidationError("标识含无效控制字符")
         elif fmt == "plain_text" and (value.lstrip().startswith(("{", "[", "<")) or "[CQ:" in value or re.search(r"(?i)(?:file|base64)://|[a-z]:[/\\]", value)):
             raise ActionValidationError("收藏只接受纯文本，不接受结构化代码或本地路径")
+        elif fmt == "inline_audio":
+            validate_inline_audio(value)
         elif fmt in {"inline_image", "inline_sticker_image"}:
             try:
                 decoded = base64.b64decode(value, validate=True)

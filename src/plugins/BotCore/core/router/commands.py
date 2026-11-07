@@ -20,10 +20,14 @@ class CommandInput:
 
 def parse_command(event: MessageEvent):
     message = Message(event.get_message())
+    reply = getattr(event, "reply", None)
+    quoted = bool(getattr(reply, "message_id", None))
     # Only remove a leading mention of this bot and a quoted-message segment.
     while message:
         segment = message[0]
         if segment.type == "reply" or (segment.type == "at" and str(segment.data.get("qq")) == str(event.self_id)):
+            if segment.type == "reply":
+                quoted = quoted or bool(segment.data.get("id") or segment.data.get("message_id"))
             message.pop(0)
         elif segment.type == "text" and not str(segment.data.get("text", "")).strip():
             message.pop(0)
@@ -35,6 +39,8 @@ def parse_command(event: MessageEvent):
     while message and message[0].type == "text":
         head.append(str(message.pop(0).data.get("text", "")))
     text = "".join(head).lstrip()
+    if quoted and not message and text.strip() in {"同意", "拒绝"}:
+        return CommandInput("审批", Message(MessageSegment.text(text.strip())))
     if not text.startswith(COMMAND_PREFIXES):
         return None
     parts = text[1:].split(maxsplit=1)

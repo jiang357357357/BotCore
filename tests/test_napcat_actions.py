@@ -34,6 +34,17 @@ actions = load("actions")
 
 
 class CatalogTests(unittest.TestCase):
+    def test_inline_voice_validates_audio_and_keeps_private_url_restriction(self):
+        audio = base64.b64encode(b"RIFF" + b"\x00" * 4 + b"WAVEfmt " + b"\x00" * 32).decode("ascii")
+        self.assertEqual(catalog.normalize_action("send_group_voice", {"group_id": 333333, "audio_base64": audio}),
+                         {"group_id": "333333", "audio_base64": audio})
+        for invalid in ("Zg==", "file:///a.wav", "<audio>", True, audio + " ", "A" * 13981017):
+            with self.subTest(payload=str(invalid)[:20]), self.assertRaises(catalog.ActionValidationError):
+                catalog.validate_inline_audio(invalid)
+        with self.assertRaises(catalog.ActionValidationError):
+            catalog.normalize_action("send_group_msg", {"group_id": "333333", "message": [
+                {"type": "record", "data": {"file": "http://127.0.0.1/audio.wav"}}]})
+
     def test_catalog_is_json_and_all_actions_have_closed_schemas(self):
         json.dumps(catalog.ACTION_CATALOG)
         self.assertGreaterEqual(len(catalog.ACTION_CATALOG), 90)
@@ -141,6 +152,22 @@ class CatalogTests(unittest.TestCase):
 
 
 class ExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inline_voice_becomes_one_group_record_with_a_real_message_receipt(self):
+        audio = base64.b64encode(b"RIFF" + b"\x00" * 4 + b"WAVEfmt " + b"\x00" * 32).decode("ascii")
+        runner = self.create_runner({"message_id": 42})
+        result = await runner.execute_action("send_group_voice", {"group_id": "333333", "audio_base64": audio})
+        self.assertEqual(result, {"message_id": 42})
+        runner.bot.call_api.assert_awaited_once()
+        self.assertEqual(runner.bot.call_api.await_args.args, ("send_group_msg",))
+        self.assertEqual(runner.bot.call_api.await_args.kwargs["message"], [
+            {"type": "record", "data": {"file": "base64://" + audio}}])
+        self.assertIn("send_group_voice", runner.SERIALIZED_SEND_ACTIONS)
+        runner.bot.call_api.return_value = {}
+        with self.assertRaises(actions.NapCatActionError) as raised:
+            await runner.execute_action("send_group_voice", {"group_id": "333333", "audio_base64": audio})
+        self.assertEqual(raised.exception.status, "unknown")
+        self.assertEqual(raised.exception.code, "MISSING_RECEIPT")
+
     def create_runner(self, result=None):
         runner = actions.NapCatActionsMixin()
         runner.bot = types.SimpleNamespace(call_api=AsyncMock(return_value=result))

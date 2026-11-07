@@ -71,8 +71,16 @@ class CoreConnectionIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     requests.append(waiting)
                     async def processing():
                         while not old_api.pending_chat_modes or not all(f.done() for f in old_api.pending_chat_modes.values()):
+                            if waiting.done():
+                                self.fail("Chat settled before processing acknowledgement: " + repr(waiting.result()) +
+                                          "; fixture log: " + (directory / "core.log").read_text(encoding="utf-8")[-4000:])
                             await asyncio.sleep(0.01)
-                    await asyncio.wait_for(processing(), 5)
+                    try:
+                        await asyncio.wait_for(processing(), 5)
+                    except TimeoutError:
+                        self.fail("Processing acknowledgement missing; pending=" + repr(old_api.pending_chat_modes) +
+                                  "; request stack=" + repr([(frame.f_code.co_name, frame.f_lineno) for frame in waiting.get_stack()]) +
+                                  "; fixture log: " + (directory / "core.log").read_text(encoding="utf-8")[-4000:])
                     current, api = await connect()
                     result = await asyncio.wait_for(waiting, 5)
                     self.assertEqual(result["error_code"], "CONNECTION_REPLACED")

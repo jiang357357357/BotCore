@@ -49,6 +49,33 @@ class CommandIngressTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.name, "语音")
         self.assertEqual(parsed.arguments.extract_plain_text(), "开启")
 
+    def test_quoted_decisions_use_the_command_ingress_in_private_and_group_chats(self):
+        for group in (False, True):
+            for decision in ("同意", "拒绝"):
+                with self.subTest(group=group, decision=decision):
+                    message = MessageSegment.reply(42) + Message(" " + decision + " ")
+                    parsed = commands.parse_command(event(message, group=group))
+                    self.assertEqual(parsed.name, "审批")
+                    self.assertEqual(parsed.arguments.extract_plain_text(), decision)
+        quoted = event("同意", group=True)
+        quoted.reply = SimpleNamespace(message_id=42)
+        self.assertEqual(commands.parse_command(quoted).name, "审批")
+
+    def test_approval_requires_an_exact_text_decision_and_a_real_quote(self):
+        for message in (Message("同意"), Message("拒绝"),
+                        MessageSegment.reply(42) + Message("我同意"),
+                        MessageSegment.reply(42) + Message("同意") + MessageSegment.image("file:///fixture.png"),
+                        MessageSegment.reply(42) + MessageSegment.at(200002) + Message("同意")):
+            self.assertIsNone(commands.parse_command(event(message, group=True)))
+
+    async def test_quoted_group_approval_bypasses_keyword_chat_routing(self):
+        group_event = event(MessageSegment.reply(42) + Message("同意"), group=True)
+        with patch.object(message_handlers, "is_allowed_by_backend", AsyncMock()) as policy, patch.object(
+                message_handlers.group_message_service, "handle_normal_message", AsyncMock()) as chat:
+            await message_handlers.handle_message(Mock(), group_event)
+        policy.assert_not_awaited()
+        chat.assert_not_awaited()
+
     async def test_unknown_and_denied_commands_never_fall_into_chat(self):
         for content in ("/未知", "！语音 开启", "/"):
             with patch.object(message_handlers, "is_allowed_by_backend", AsyncMock()) as policy, patch.object(
@@ -135,6 +162,20 @@ class CommandTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(data["voice_enabled"])
         self.assertEqual(result["request_id"], data["request_id"])
         self.assertFalse(self.api.pending_command_requests)
+
+    async def test_approval_transport_sends_only_the_decision_and_qq_quoted_message(self):
+        self.socket.send.side_effect = self.respond
+        for group in (False, True):
+            with self.subTest(group=group), patch(APP + ".get_voice_mode", return_value=False):
+                quoted = event(MessageSegment.reply(42) + Message("拒绝"), group=group)
+                command = commands.parse_command(quoted)
+                await self.api.request_command(quoted, command.name, command.arguments.extract_plain_text())
+            data = self.socket.send.await_args.args[0]["data"]
+            self.assertEqual(data["name"], "审批")
+            self.assertEqual(data["arguments"], "拒绝")
+            self.assertEqual(data["reply_to_id"], "42")
+            self.assertEqual(data["user_id"], "200001")
+            self.assertEqual(data["group_id"], "300001" if group else "")
 
     async def test_unknown_receipt_cannot_complete_request_and_timeout_is_uncertain(self):
         async def wrong(payload, **kwargs):

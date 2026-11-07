@@ -268,6 +268,40 @@ class AgentReplyDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentFinalMessageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_voice_crosses_real_reply_dispatch_and_ignores_ordinary_voice_mode(self):
+        import base64
+        audio = base64.b64encode(b"RIFF" + b"\x00" * 4 + b"WAVEfmt " + b"\x00" * 32).decode("ascii")
+        client = WebSocketClient("ws://test.invalid")
+        api = MonCoreAPI(client)
+        future = asyncio.get_running_loop().create_future()
+        api.pending_requests["voice"] = future
+        await client._handle_message({"command": "reply", "data": {
+            "request_id": "voice", "content": "（挥手）老师好！", "agent_audio_base64": audio,
+            "images_base64": [],
+        }})
+        result = await asyncio.wait_for(future, 0.5)
+        self.assertEqual(result["agent_audio_base64"], audio)
+        backend = Mock(store_message=AsyncMock(return_value=True), request_reply=AsyncMock(return_value=result))
+        service = BaseMessageService(Mock(), Mock(), Mock())
+        service._ensure_moncore_api = AsyncMock(return_value=backend)
+        event = PrivateMessageEvent.model_construct(user_id=20002)
+        with patch("src.plugins.BotCore.core.business.message.base_message_service.get_voice_mode", return_value=False):
+            message = await service._store_and_request_reply(event, "voice-fixture")
+        self.assertEqual(message[0].type, "record")
+        self.assertEqual(message[0].data["file"], "base64://" + audio)
+
+    async def test_invalid_agent_audio_keeps_final_reply_instead_of_losing_it(self):
+        client = WebSocketClient("ws://test.invalid")
+        api = MonCoreAPI(client)
+        for payload in ("not audio", True, "Zg=="):
+            future = asyncio.get_running_loop().create_future()
+            api.pending_requests["voice"] = future
+            await client._handle_message({"command": "reply", "data": {
+                "request_id": "voice", "content": "完整回复", "agent_audio_base64": payload}})
+            result = await asyncio.wait_for(future, 0.5)
+            self.assertIsNone(result["agent_audio_base64"])
+            self.assertEqual(result["content"], "完整回复")
+
     async def test_timeout_notice_is_delivered_as_private_and_group_text(self):
         for group in (False, True):
             with self.subTest(group=group):

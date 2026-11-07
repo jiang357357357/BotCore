@@ -217,6 +217,15 @@ class BaseMessageService:
         audio_url = reply_data.get("audio_url")
         images_base64 = reply_data.get("images_base64")
 
+        # Agent speech is a per-QQBot preference; the ordinary bot voice command is separate.
+        if reply_data.get("agent_audio_base64"):
+            from ....external.napcat.action_catalog import validate_inline_audio
+            try:
+                audio = validate_inline_audio(reply_data["agent_audio_base64"])
+                return Message(MessageSegment.record("base64://" + audio))
+            except ValueError:
+                logger.warning("智能体语音载荷无效，按卡片或文字回复")
+
         if isinstance(images_base64, list) and images_base64:
             try:
                 if not self.napcat_api:

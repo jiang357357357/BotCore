@@ -254,6 +254,12 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
                     content_parts.append(f"[用户提供的合并转发，以下为引用内容]\n{forwarded}\n[/合并转发]" if forwarded else "[合并转发：暂未能展开]")
                 elif segment_type == "video":
                     content_parts.append("[视频]")
+                elif segment_type == "file":
+                    data = getattr(segment, "data", {}) or {}
+                    name = str(data.get("file") or data.get("name") or "未知文件").replace("\r", " ").replace("\n", " ")[:200]
+                    size = data.get("file_size")
+                    size_text = f"，{size} 字节" if str(size).isascii() and str(size).isdigit() and len(str(size)) <= 12 else ""
+                    content_parts.append(f"[文件: {name}{size_text}]")
                 elif segment_type == "reply":
                     continue
                 elif segment_type == "at":
@@ -265,7 +271,7 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
                 return " ".join(content_parts)
 
             content = message.extract_plain_text()
-            return content.strip() if content.strip() else "[空消息]"
+            return content.strip() if content.strip() else "[非文本消息：未获取到内容]"
         except Exception as e:
             logger.warning(f"提取非文本消息内容时出错: {e}")
             return "[消息解析错误]"
@@ -303,12 +309,15 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
                 continue
             data = dict(getattr(segment, "data", {}) or {})
             if segment.type == "video":
+                size = data.get("file_size") or 0
+                if isinstance(size, str) and size.isascii() and size.isdigit() and len(size) <= 12:
+                    size = int(size)
                 files.append({"file_id": str(data.get("file_id") or data.get("file") or ""),
                               "filename": f"qq-video-{len(files) + 1}.mp4",
-                              "file_size": data.get("file_size") or 0, "media_kind": "video"})
+                              "file_size": size, "media_kind": "video"})
                 continue
             files.append({"file_id": str(data.get("file_id") or ""),
-                          "filename": str(data.get("file") or ""),
+                          "filename": str(data.get("file") or data.get("name") or ""),
                           "file_size": data.get("file_size")})
         return files
 
@@ -452,6 +461,17 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
         files = MonCoreAPI._extract_file_metadata(message)
         if files:
             metadata["files"] = files
+        if not metadata["has_text"]:
+            if files:
+                metadata["empty_kind"] = "file"
+            elif images:
+                metadata["empty_kind"] = "image"
+            elif any(segment.type == "reply" for segment in message) and not any(segment.type not in {"text", "reply", "at"} for segment in message):
+                metadata["empty_kind"] = "reply_only"
+            elif not metadata["has_non_text"]:
+                metadata["empty_kind"] = "blank"
+            else:
+                metadata["empty_kind"] = "non_text"
         reply_to = MonCoreAPI._extract_reply_metadata(event)
         if reply_to:
             metadata["reply_to"] = reply_to
@@ -824,8 +844,15 @@ class MonCoreAPI(QzonePublishMixin, NapCatActionsMixin, CommandsMixin):
             reply_data = {
                 "content": content,
                 "audio_url": audio_url,  # 可能为 None 或完整URL
+                "agent_audio_base64": None,
                 "images_base64": images_base64,
             }
+            if data.get("agent_audio_base64"):
+                from ...napcat.action_catalog import validate_inline_audio
+                try:
+                    reply_data["agent_audio_base64"] = validate_inline_audio(data["agent_audio_base64"])
+                except ValueError:
+                    logger.warning("智能体语音载荷无效，保留文字回复")
             
             # 如果提供了 request_id，使用 request_id 精确匹配
             if request_id:
